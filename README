@@ -1,0 +1,98 @@
+# Service Template
+
+Backend-only FastAPI starter with feature-first structure, migrations, and database provisioning scripts.
+
+## Local development
+
+Backend:
+`cd backend && uv run uvicorn app.main:app --reload`
+
+## Environment
+
+Shared settings live in `.env`.
+
+Required database settings:
+- `POSTGRES_HOST`
+- `POSTGRES_PORT`
+- `POSTGRES_DB`
+- `PG_ADMIN_USER`
+- `PG_ADMIN_PASSWORD`
+- `APP_DB_USER`
+- `APP_DB_PASSWORD`
+
+Required app settings:
+- `APP_NAME`
+- `APP_VERSION`
+- `ENV`
+- `DEBUG`
+- `LOG_LEVEL`
+- `CORS_ORIGINS`
+
+Deployment settings:
+- `APP_HOST` for the Uvicorn bind host. Default: `127.0.0.1` for local runs
+- `APP_PORT` for the Uvicorn port. Default: `8000`
+- `HOST_PORT` for the published Docker Compose port. Default: `8000`
+
+`PG_ADMIN_*` credentials are only used for provisioning the target database and role.
+
+`APP_DB_*` credentials are the runtime credentials used by FastAPI, Alembic, and the app connection pool after provisioning completes.
+
+## Database expectations
+
+This template does not bundle Postgres in the image or in the default Compose file.
+
+Point it at an existing Postgres server. The startup flow connects to the server's default `postgres` database with the `PG_ADMIN_*` credentials, ensures the target app database and runtime role exist, grants privileges, and then runs `alembic upgrade head`.
+
+Repeated container starts are safe: provisioning is idempotent and migrations run on every startup.
+
+## Self-hosting
+
+1. Create `.env` from `.env.example` and fill in the required values.
+2. Confirm the target Postgres server already exists and is reachable from the container host.
+3. Build and start the service:
+
+```sh
+docker compose up -d --build
+```
+
+4. Or pull a published image and start it:
+
+```sh
+APP_IMAGE=ghcr.io/<owner>/<repo>:latest docker compose up -d
+```
+
+The container exposes the FastAPI service directly on the published host port from `docker-compose.yml`.
+
+## Verification
+
+Check API health:
+`curl -i http://localhost:${HOST_PORT:-8000}/health/`
+
+Check the container status:
+`docker compose ps`
+
+## Migrations and provisioning
+
+Useful commands during development:
+
+- `python scripts/create_feature.py <feature_name>`
+- `python scripts/create_model.py <feature_name>`
+- `python scripts/provision_db.py`
+- `python scripts/bootstrap_db.py`
+- `cd backend && uv run alembic revision --autogenerate -m "add feature"`
+- `cd backend && uv run alembic upgrade head`
+
+Alembic reads the same runtime database settings as the application, so local runs and container startup target the same database configuration.
+
+## Publishing
+
+GitHub Actions publishes the root Docker image to GHCR on:
+- pushes to `main`
+- version tags matching `v*`
+- manual workflow dispatch
+
+## Current Structure
+
+- `backend/app/features/*` contains feature routers, services, schemas, models, and tests
+- `backend/app/core/*` contains shared app settings, db helpers, and router/model loading
+- `scripts/*` contains scaffolding and database bootstrap helpers
