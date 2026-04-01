@@ -23,7 +23,9 @@ from app.features.orchestration.service import OrchestrationService
 from app.integrations.control_hub.client import (
     ControlHubApprovalItemCreate,
     ControlHubApprovalItemRead,
+    ControlHubIntegrationError,
 )
+from app.integrations.providers.base import ProviderExecutionError
 from app.integrations.providers.router import PolicyBasedProviderRouter
 
 
@@ -58,10 +60,14 @@ class FakeControlHubClient:
     def __init__(self) -> None:
         self._next_id = 1
         self.items: dict[int, ControlHubApprovalItemRead] = {}
+        self.fail_create = False
+        self.fail_get = False
 
     async def create_approval(
         self, item: ControlHubApprovalItemCreate
     ) -> ControlHubApprovalItemRead:
+        if self.fail_create:
+            raise ControlHubIntegrationError("create approval unavailable")
         approval = ControlHubApprovalItemRead(
             id=self._next_id,
             title=item.title,
@@ -82,6 +88,8 @@ class FakeControlHubClient:
         return approval
 
     async def get_approval(self, item_id: int) -> ControlHubApprovalItemRead:
+        if self.fail_get:
+            raise ControlHubIntegrationError("get approval unavailable")
         return self.items[item_id]
 
     async def list_approvals(self, **_: object) -> list[ControlHubApprovalItemRead]:
@@ -99,10 +107,13 @@ class FakeControlHubClient:
 
 
 class FakeProvider:
-    def __init__(self, provider_name: str) -> None:
+    def __init__(self, provider_name: str, *, should_fail: bool = False) -> None:
         self.provider_name = provider_name
+        self.should_fail = should_fail
 
     async def execute(self, work_package):
+        if self.should_fail:
+            raise ProviderExecutionError(f"{self.provider_name} exploded")
         return WorkerExecutionResult(
             provider=self.provider_name,
             worker_target=work_package.worker_target,
@@ -118,13 +129,23 @@ class FakeProvider:
 
 
 class FakeProviderRouter(PolicyBasedProviderRouter):
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        fallback_enabled: bool = False,
+        failing_providers: set[str] | None = None,
+    ) -> None:
+        failing_providers = failing_providers or set()
         super().__init__(
             default_provider="codex",
             repo_overrides={},
+            fallback_enabled=fallback_enabled,
             providers={
-                "codex": FakeProvider("codex"),
-                "copilot_cli": FakeProvider("copilot_cli"),
+                "codex": FakeProvider("codex", should_fail="codex" in failing_providers),
+                "copilot_cli": FakeProvider(
+                    "copilot_cli",
+                    should_fail="copilot_cli" in failing_providers,
+                ),
             },
         )
 

@@ -32,6 +32,9 @@ Deployment settings:
 - `APP_HOST` for the Uvicorn bind host. Default: `127.0.0.1` for local runs
 - `APP_PORT` for the Uvicorn port. Default: `8000`
 - `HOST_PORT` for the published Docker Compose port. Default: `8000`
+- `CODEX_COMMAND` and `COPILOT_CLI_COMMAND` for the worker adapter commands
+- `ORCHESTRATION_DRY_RUN` to keep provider execution synthetic during local development
+- `ORCHESTRATION_PROVIDER_FALLBACK_ENABLED` to retry with a secondary provider if the primary one fails
 
 `PG_ADMIN_*` credentials are only used for provisioning the target database and role.
 
@@ -176,6 +179,12 @@ Expected workflow:
 - After PR merge, provisional knowledge is promoted.
 
 Execution contracts now carry optional project context and a worker target from run creation through the approved work package. That gives later provider, artifact, and RAG work a stable project-scoped contract to build on.
+
+## Provider adapter contract
+
+When `ORCHESTRATION_DRY_RUN=false`, the service treats `CODEX_COMMAND` and `COPILOT_CLI_COMMAND` as adapter commands. It sends the approved work package JSON to the command on `stdin` and expects a JSON object on `stdout` shaped like `WorkerExecutionResult`.
+
+That keeps the FastAPI orchestration layer decoupled from the exact CLI or agent runtime used underneath while still giving the service a stable execution boundary and optional provider fallback behavior.
 
 ## Migrations and provisioning
 
