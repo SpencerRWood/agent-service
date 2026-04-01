@@ -1,5 +1,6 @@
 {
   "python.analysis.extraPaths": [
     "./backend"
-  ]
+  ],
+  "chatgpt.openOnStartup": false
 }

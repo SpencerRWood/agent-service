@@ -71,6 +71,112 @@ Check API health:
 Check the container status:
 `docker compose ps`
 
+## Control Hub Bridge
+
+This service exposes orchestration endpoints for direct API use and a thin Control Hub chat bridge.
+
+### Start the service
+
+Run migrations and start the backend:
+
+```sh
+cd backend
+uv run alembic upgrade head
+uv run uvicorn app.main:app --reload
+```
+
+### Core orchestration API
+
+Create a run directly:
+
+```sh
+curl -X POST http://localhost:8000/orchestration/runs/ \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "user_prompt": "Add audit logging to the orchestration flow",
+    "repo": "agent-service",
+    "project": {
+      "project_slug": "control-hub",
+      "project_path": "apps/control-hub"
+    },
+    "worker_target": "worker_b"
+  }'
+```
+
+Reconcile a run after the approval item is approved in Control Hub:
+
+```sh
+curl -X POST http://localhost:8000/orchestration/runs/<run_id>/reconcile
+```
+
+Mark a pull request approved:
+
+```sh
+curl -X POST http://localhost:8000/orchestration/runs/<run_id>/pull-request-events \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "status": "approved",
+    "approved_by": ["reviewer"]
+  }'
+```
+
+Mark a pull request merged:
+
+```sh
+curl -X POST http://localhost:8000/orchestration/runs/<run_id>/pull-request-events \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "status": "merged"
+  }'
+```
+
+### Control Hub chat bridge
+
+Use this when Control Hub chat or a plugin needs to create and monitor orchestration runs without depending on the raw run API contract.
+
+Create a run from Control Hub chat context:
+
+```sh
+curl -X POST http://localhost:8000/orchestration/tools/control-hub-chat/run \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "prompt": "Add audit logging to the orchestration flow",
+    "context": {
+      "conversation_id": "conv-1",
+      "message_id": "msg-1",
+      "user_id": "user-1",
+      "username": "spencer",
+      "repo": "agent-service",
+      "project": {
+        "project_slug": "control-hub",
+        "project_path": "apps/control-hub"
+      },
+      "worker_target": "worker_b",
+      "requested_by": "control-hub-chat",
+      "assigned_to": null,
+      "labels": ["control-hub", "chat"],
+      "extra": {
+        "source": "control_hub"
+      }
+    }
+  }'
+```
+
+Read run status for chat display:
+
+```sh
+curl http://localhost:8000/orchestration/tools/control-hub-chat/run/<run_id>
+```
+
+Expected workflow:
+- Control Hub chat creates the run through the bridge endpoint.
+- This service creates the Control Hub approval item and stores run state in Postgres.
+- After approval, reconcile advances the run and Worker B opens a PR.
+- After PR approval, Agent C stages provisional docs and knowledge artifacts.
+- After PR merge, provisional knowledge is promoted.
+
+Execution contracts now carry optional project context and a worker target from run creation through the approved work package. That gives later provider, artifact, and RAG work a stable project-scoped contract to build on.
+
 ## Migrations and provisioning
 
 Useful commands during development:
