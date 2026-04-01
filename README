@@ -35,6 +35,7 @@ Deployment settings:
 - `CODEX_COMMAND` and `COPILOT_CLI_COMMAND` for the worker adapter commands
 - `ORCHESTRATION_DRY_RUN` to keep provider execution synthetic during local development
 - `ORCHESTRATION_PROVIDER_FALLBACK_ENABLED` to retry with a secondary provider if the primary one fails
+- `AGENT_CONFIG_PATH` for the per-agent YAML configuration file. Default: `config/agents.yaml`
 
 `PG_ADMIN_*` credentials are only used for provisioning the target database and role.
 
@@ -180,11 +181,30 @@ Expected workflow:
 
 Execution contracts now carry optional project context and a worker target from run creation through the approved work package. That gives later provider, artifact, and RAG work a stable project-scoped contract to build on.
 
+Artifact generation now stages a structured package in `knowledge_artifact_json` with:
+- a manifest containing repo, project, provider, worker target, PR source, and stage metadata
+- generated markdown documents for implementation summary and operational notes
+- promotion history that records when an artifact is generated, promoted, or marked stale
+
+That means later ingestion work can consume explicit staged documents and metadata instead of deriving them from a flat summary blob.
+
 ## Provider adapter contract
 
 When `ORCHESTRATION_DRY_RUN=false`, the service treats `CODEX_COMMAND` and `COPILOT_CLI_COMMAND` as adapter commands. It sends the approved work package JSON to the command on `stdin` and expects a JSON object on `stdout` shaped like `WorkerExecutionResult`.
 
 That keeps the FastAPI orchestration layer decoupled from the exact CLI or agent runtime used underneath while still giving the service a stable execution boundary and optional provider fallback behavior.
+
+## Agent Configuration
+
+Per-agent configuration now lives in [config/agents.yaml](/Users/spencerwood/Documents/Projects/agent-service/config/agents.yaml).
+
+The file currently supports:
+- `agents.agent_a` for planner defaults like `requested_by`
+- `agents.worker_b` for executor defaults like `assigned_to`, `worker_target`, and `default_provider`
+- `agents.agent_c` for artifact-generation behavior and future ingestion ownership
+- `providers.<name>` for `enabled`, adapter command, and `dry_run` behavior per provider
+
+Environment variables still work, but the YAML file is now the main place to define each individual agent.
 
 ## Migrations and provisioning
 

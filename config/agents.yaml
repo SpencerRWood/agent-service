@@ -1,0 +1,35 @@
+version: 1
+
+agents:
+  agent_a:
+    display_name: Agent A
+    role: planner
+    requested_by: agent-a
+    instructions: |
+      Builds the execution proposal, summarizes risk, and prepares approval payloads.
+
+  worker_b:
+    display_name: Worker B
+    role: executor
+    assigned_to: worker-b
+    worker_target: worker_b
+    default_provider: codex
+    instructions: |
+      Executes approved code-change work packages and opens pull requests.
+
+  agent_c:
+    display_name: Agent C
+    role: artifact_generator
+    worker_target: agent_c
+    instructions: |
+      Generates provisional implementation artifacts and prepares them for later ingestion.
+
+providers:
+  codex:
+    command: codex
+    dry_run: true
+
+  copilot_cli:
+    enabled: false
+    command: copilot
+    dry_run: true

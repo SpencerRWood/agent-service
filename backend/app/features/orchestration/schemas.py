@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
+from hashlib import sha256
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -78,11 +79,62 @@ class WorkerExecutionResult(BaseModel):
     known_risks: list[str] = Field(default_factory=list)
 
 
+class ArtifactStage(StrEnum):
+    PROVISIONAL = "provisional"
+    PROMOTED = "promoted"
+    STALE = "stale"
+
+
+class ArtifactFile(BaseModel):
+    path: str
+    media_type: str
+    title: str
+    content: str
+    sha256: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @classmethod
+    def from_content(
+        cls,
+        *,
+        path: str,
+        media_type: str,
+        title: str,
+        content: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> ArtifactFile:
+        return cls(
+            path=path,
+            media_type=media_type,
+            title=title,
+            content=content,
+            sha256=sha256(content.encode("utf-8")).hexdigest(),
+            metadata=metadata or {},
+        )
+
+
+class ArtifactManifest(BaseModel):
+    artifact_id: str
+    repo: str
+    project: ProjectContext | None = None
+    provider: ProviderName
+    worker_target: WorkerTarget
+    stage: ArtifactStage
+    generated_at: datetime
+    source_run_id: str
+    source_pr_url: str
+    source_pr_number: int | None = None
+    tags: list[str] = Field(default_factory=list)
+
+
 class KnowledgeCaptureArtifact(BaseModel):
+    manifest: ArtifactManifest
     implementation_summary: str
     operational_notes: list[str]
     decision_log: list[str]
     knowledge_chunks: list[str]
+    documents: list[ArtifactFile] = Field(default_factory=list)
+    promotion_history: list[dict[str, Any]] = Field(default_factory=list)
     source_pr_url: str
     provisional: bool = True
 

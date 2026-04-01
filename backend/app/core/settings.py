@@ -4,6 +4,8 @@ from pathlib import Path
 from pydantic import Field, computed_field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.core.agent_config import AgentRegistry, load_agent_registry
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -23,6 +25,10 @@ class Settings(BaseSettings):
     )
     app_host: str = Field(default="127.0.0.1", validation_alias="APP_HOST")
     app_port: int = Field(default=8000, validation_alias="APP_PORT")
+    agent_config_path: str = Field(
+        default="config/agents.yaml",
+        validation_alias="AGENT_CONFIG_PATH",
+    )
     control_hub_base_url: str = Field(
         default="https://control.woodhost.cloud/api",
         validation_alias="CONTROL_HUB_BASE_URL",
@@ -90,6 +96,19 @@ class Settings(BaseSettings):
 
     app_db_user: str
     app_db_password: str
+
+    @computed_field
+    @property
+    def resolved_agent_config_path(self) -> Path:
+        config_path = Path(self.agent_config_path)
+        if config_path.is_absolute():
+            return config_path
+        return Path(__file__).resolve().parents[3] / config_path
+
+    @computed_field
+    @property
+    def agent_registry(self) -> AgentRegistry:
+        return load_agent_registry(self.resolved_agent_config_path)
 
     @computed_field
     @property
