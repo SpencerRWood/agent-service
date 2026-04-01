@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from pydantic import Field, computed_field, field_validator
@@ -22,6 +23,63 @@ class Settings(BaseSettings):
     )
     app_host: str = Field(default="127.0.0.1", validation_alias="APP_HOST")
     app_port: int = Field(default=8000, validation_alias="APP_PORT")
+    control_hub_base_url: str = Field(
+        default="https://control.woodhost.cloud/api",
+        validation_alias="CONTROL_HUB_BASE_URL",
+    )
+    control_hub_openapi_url: str = Field(
+        default="https://control.woodhost.cloud/api/openapi.json",
+        validation_alias="CONTROL_HUB_OPENAPI_URL",
+    )
+    control_hub_timeout_seconds: float = Field(
+        default=15.0,
+        validation_alias="CONTROL_HUB_TIMEOUT_SECONDS",
+    )
+    control_hub_enable_remote_schema_check: bool = Field(
+        default=False,
+        validation_alias="CONTROL_HUB_ENABLE_REMOTE_SCHEMA_CHECK",
+    )
+    orchestration_default_provider: str = Field(
+        default="codex",
+        validation_alias="ORCHESTRATION_DEFAULT_PROVIDER",
+    )
+    orchestration_provider_repo_overrides: dict[str, str] = Field(
+        default_factory=dict,
+        validation_alias="ORCHESTRATION_PROVIDER_REPO_OVERRIDES",
+    )
+    orchestration_provider_fallback_enabled: bool = Field(
+        default=False,
+        validation_alias="ORCHESTRATION_PROVIDER_FALLBACK_ENABLED",
+    )
+    orchestration_default_requested_by: str = Field(
+        default="agent-a",
+        validation_alias="ORCHESTRATION_DEFAULT_REQUESTED_BY",
+    )
+    orchestration_default_assigned_to: str | None = Field(
+        default=None,
+        validation_alias="ORCHESTRATION_DEFAULT_ASSIGNED_TO",
+    )
+    orchestration_default_worker_target: str = Field(
+        default="worker_b",
+        validation_alias="ORCHESTRATION_DEFAULT_WORKER_TARGET",
+    )
+    orchestration_default_repo: str = Field(
+        default="default",
+        validation_alias="ORCHESTRATION_DEFAULT_REPO",
+    )
+    orchestration_dry_run: bool = Field(
+        default=True,
+        validation_alias="ORCHESTRATION_DRY_RUN",
+    )
+    codex_command: str = Field(default="codex", validation_alias="CODEX_COMMAND")
+    copilot_cli_command: str = Field(
+        default="copilot",
+        validation_alias="COPILOT_CLI_COMMAND",
+    )
+    git_provider_name: str = Field(
+        default="github",
+        validation_alias="GIT_PROVIDER_NAME",
+    )
 
     postgres_host: str
     postgres_port: int
@@ -76,6 +134,40 @@ class Settings(BaseSettings):
             return []
 
         return [origin.strip() for origin in value.split(",") if origin.strip()]
+
+    @field_validator("debug", "control_hub_enable_remote_schema_check", mode="before")
+    @classmethod
+    def parse_boolish(cls, value: bool | str) -> bool:
+        if isinstance(value, bool):
+            return value
+
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on", "debug"}:
+            return True
+        if normalized in {"0", "false", "no", "off", "release", "prod", "production"}:
+            return False
+
+        raise ValueError("Expected a boolean-like string value")
+
+    @field_validator("orchestration_provider_repo_overrides", mode="before")
+    @classmethod
+    def parse_provider_overrides(
+        cls, value: str | dict[str, str] | None
+    ) -> dict[str, str]:
+        if value in (None, ""):
+            return {}
+
+        if isinstance(value, dict):
+            return value
+
+        loaded = json.loads(value)
+        if not isinstance(loaded, dict):
+            raise ValueError("ORCHESTRATION_PROVIDER_REPO_OVERRIDES must be a JSON object")
+
+        return {
+            str(repo): str(provider)
+            for repo, provider in loaded.items()
+        }
 
 
 settings = Settings()  # type: ignore[call-arg]

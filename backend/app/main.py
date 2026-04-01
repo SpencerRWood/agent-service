@@ -1,8 +1,21 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.router_loader import register_feature_routers
 from app.core.settings import settings
+from app.integrations.control_hub.contract import (
+    assert_local_snapshot_compatible,
+    validate_remote_openapi_if_enabled,
+)
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    assert_local_snapshot_compatible()
+    await validate_remote_openapi_if_enabled()
+    yield
 
 
 def create_app() -> FastAPI:
@@ -10,6 +23,7 @@ def create_app() -> FastAPI:
         title=f"{settings.app_name} API",
         version=settings.app_version,
         debug=settings.debug,
+        lifespan=lifespan,
     )
 
     app.add_middleware(

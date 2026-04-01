@@ -9,6 +9,7 @@ dependencies = [
     "fastapi>=0.111",
     "uvicorn[standard]>=0.30",
     "asyncpg>=0.30.0",
+    "httpx>=0.28.1",
     "pydantic>=2.7",
     "python-dotenv>=1.0",
     "sqlalchemy>=2.0.48",
@@ -19,6 +20,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    "aiosqlite>=0.21.0",
     "pre-commit>=4.5.1",
     "pytest>=9.0.2",
     "httpx>=0.28.1",
@@ -48,6 +50,8 @@ quote-style = "double"
 
 [tool.ruff.lint.per-file-ignores]
 "**/migrations/env.py" = ["E402"]
+"app/features/orchestration/dependencies.py" = ["B008"]
+"app/features/orchestration/router.py" = ["B008"]
 
 [tool.pytest.ini_options]
 minversion = "8.0"
