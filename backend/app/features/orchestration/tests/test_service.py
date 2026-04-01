@@ -20,7 +20,9 @@ def test_rejected_approval_ends_run(orchestration_dependencies):
     control_hub = orchestration_dependencies["control_hub"]
 
     run = asyncio.run(
-        service.create_run(CreateRunRequest(user_prompt="Delete old feature flags", repo="agent-service"))
+        service.create_run(
+            CreateRunRequest(user_prompt="Delete old feature flags", repo="agent-service")
+        )
     )
     control_hub.set_status(run.control_hub_approval_id, "REJECTED", reason="Too risky")
 
@@ -34,9 +36,12 @@ def test_pr_approval_triggers_docs_stage(orchestration_dependencies):
     service = orchestration_dependencies["service"]
     control_hub = orchestration_dependencies["control_hub"]
     pr_client = orchestration_dependencies["pr_client"]
+    rag_client = orchestration_dependencies["rag_client"]
 
     run = asyncio.run(
-        service.create_run(CreateRunRequest(user_prompt="Refactor orchestration service", repo="agent-service"))
+        service.create_run(
+            CreateRunRequest(user_prompt="Refactor orchestration service", repo="agent-service")
+        )
     )
     control_hub.set_status(run.control_hub_approval_id, "APPROVED")
     asyncio.run(service.reconcile_run(run.id))
@@ -55,15 +60,23 @@ def test_pr_approval_triggers_docs_stage(orchestration_dependencies):
     assert reconciled.run.knowledge_artifact_json["documents"][0]["path"].endswith(
         "implementation-summary.md"
     )
+    assert rag_client.receipts[-1].operation == "stage_provisional"
+    assert (
+        reconciled.run.knowledge_artifact_json["promotion_history"][-1]["event"]
+        == "rag_stage_provisional"
+    )
 
 
 def test_pr_merge_promotes_rag(orchestration_dependencies):
     service = orchestration_dependencies["service"]
     control_hub = orchestration_dependencies["control_hub"]
     pr_client = orchestration_dependencies["pr_client"]
+    rag_client = orchestration_dependencies["rag_client"]
 
     run = asyncio.run(
-        service.create_run(CreateRunRequest(user_prompt="Refactor orchestration service", repo="agent-service"))
+        service.create_run(
+            CreateRunRequest(user_prompt="Refactor orchestration service", repo="agent-service")
+        )
     )
     control_hub.set_status(run.control_hub_approval_id, "APPROVED")
     asyncio.run(service.reconcile_run(run.id))
@@ -80,15 +93,19 @@ def test_pr_merge_promotes_rag(orchestration_dependencies):
     assert reconciled.run.rag_status == RagStatus.PROMOTED
     assert reconciled.run.knowledge_artifact_json["manifest"]["stage"] == "promoted"
     assert reconciled.run.knowledge_artifact_json["provisional"] is False
-    assert reconciled.run.knowledge_artifact_json["promotion_history"][-1]["event"] == "promoted"
+    assert rag_client.receipts[-1].operation == "promote"
+    assert reconciled.run.knowledge_artifact_json["promotion_history"][-1]["event"] == "rag_promote"
 
 
 def test_pr_changes_requested_marks_knowledge_stale(orchestration_dependencies):
     service = orchestration_dependencies["service"]
     control_hub = orchestration_dependencies["control_hub"]
+    rag_client = orchestration_dependencies["rag_client"]
 
     run = asyncio.run(
-        service.create_run(CreateRunRequest(user_prompt="Refactor orchestration service", repo="agent-service"))
+        service.create_run(
+            CreateRunRequest(user_prompt="Refactor orchestration service", repo="agent-service")
+        )
     )
     control_hub.set_status(run.control_hub_approval_id, "APPROVED")
     asyncio.run(service.reconcile_run(run.id))
@@ -109,7 +126,8 @@ def test_pr_changes_requested_marks_knowledge_stale(orchestration_dependencies):
     assert updated.rag_status == RagStatus.STALE
     assert updated.execution_status == ExecutionStatus.PR_OPEN
     assert updated.knowledge_artifact_json["manifest"]["stage"] == "stale"
-    assert updated.knowledge_artifact_json["promotion_history"][-1]["event"] == "stale"
+    assert rag_client.receipts[-1].operation == "mark_stale"
+    assert updated.knowledge_artifact_json["promotion_history"][-1]["event"] == "rag_mark_stale"
     assert updated.knowledge_artifact_json["documents"][0]["metadata"]["stale"] is True
 
 
@@ -128,7 +146,9 @@ def test_retry_failed_run_recreates_approval(orchestration_dependencies):
 
 def test_retry_non_failed_run_is_rejected(orchestration_dependencies):
     service = orchestration_dependencies["service"]
-    run = asyncio.run(service.create_run(CreateRunRequest(user_prompt="Add endpoint", repo="agent-service")))
+    run = asyncio.run(
+        service.create_run(CreateRunRequest(user_prompt="Add endpoint", repo="agent-service"))
+    )
 
     try:
         asyncio.run(service.retry_run(run.id))
@@ -195,11 +215,14 @@ def test_reconcile_falls_back_to_secondary_provider(orchestration_dependencies):
             fallback_enabled=True,
             failing_providers={"codex"},
         ),
+        rag_client=orchestration_dependencies["rag_client"],
         pr_state_client=pr_client,
     )
 
     run = asyncio.run(
-        service.create_run(CreateRunRequest(user_prompt="Implement provider fallback", repo="agent-service"))
+        service.create_run(
+            CreateRunRequest(user_prompt="Implement provider fallback", repo="agent-service")
+        )
     )
     control_hub.set_status(run.control_hub_approval_id, "APPROVED")
 
@@ -208,7 +231,9 @@ def test_reconcile_falls_back_to_secondary_provider(orchestration_dependencies):
     assert reconciled.run.execution_status == ExecutionStatus.PR_OPEN
     assert reconciled.run.provider == "copilot_cli"
     assert reconciled.run.execution_result_json["provider"] == "copilot_cli"
-    assert "Primary provider 'codex' failed" in reconciled.run.execution_result_json["known_risks"][0]
+    assert (
+        "Primary provider 'codex' failed" in reconciled.run.execution_result_json["known_risks"][0]
+    )
 
 
 def test_generated_artifact_includes_project_context(orchestration_dependencies):
@@ -259,11 +284,14 @@ def test_reconcile_without_fallback_marks_run_failed(orchestration_dependencies)
         repository=repository,
         control_hub_client=control_hub,
         provider_router=FakeProviderRouter(failing_providers={"codex"}),
+        rag_client=orchestration_dependencies["rag_client"],
         pr_state_client=pr_client,
     )
 
     run = asyncio.run(
-        service.create_run(CreateRunRequest(user_prompt="Implement provider fallback", repo="agent-service"))
+        service.create_run(
+            CreateRunRequest(user_prompt="Implement provider fallback", repo="agent-service")
+        )
     )
     control_hub.set_status(run.control_hub_approval_id, "APPROVED")
 
@@ -278,7 +306,9 @@ def test_create_run_surfaces_control_hub_error(orchestration_dependencies):
     orchestration_dependencies["control_hub"].fail_create = True
 
     try:
-        asyncio.run(service.create_run(CreateRunRequest(user_prompt="Add endpoint", repo="agent-service")))
+        asyncio.run(
+            service.create_run(CreateRunRequest(user_prompt="Add endpoint", repo="agent-service"))
+        )
     except HTTPException as exc:
         assert exc.status_code == 502
         assert "Failed to create Control Hub approval" in exc.detail
@@ -290,7 +320,9 @@ def test_reconcile_surfaces_control_hub_get_error(orchestration_dependencies):
     service = orchestration_dependencies["service"]
     control_hub = orchestration_dependencies["control_hub"]
 
-    run = asyncio.run(service.create_run(CreateRunRequest(user_prompt="Add endpoint", repo="agent-service")))
+    run = asyncio.run(
+        service.create_run(CreateRunRequest(user_prompt="Add endpoint", repo="agent-service"))
+    )
     control_hub.fail_get = True
 
     try:
@@ -300,3 +332,60 @@ def test_reconcile_surfaces_control_hub_get_error(orchestration_dependencies):
         assert "Failed to fetch Control Hub approval" in exc.detail
     else:  # pragma: no cover - explicit failure branch
         raise AssertionError("reconcile_run should surface Control Hub failures")
+
+
+def test_pr_approval_marks_rag_failed_when_stage_ingest_fails(orchestration_dependencies):
+    service = orchestration_dependencies["service"]
+    control_hub = orchestration_dependencies["control_hub"]
+    pr_client = orchestration_dependencies["pr_client"]
+    orchestration_dependencies["rag_client"].fail_stage = True
+
+    run = asyncio.run(
+        service.create_run(
+            CreateRunRequest(user_prompt="Refactor orchestration service", repo="agent-service")
+        )
+    )
+    control_hub.set_status(run.control_hub_approval_id, "APPROVED")
+    asyncio.run(service.reconcile_run(run.id))
+    pr_client.set_state(run.id, PullRequestState(status=PullRequestStatus.APPROVED))
+
+    reconciled = asyncio.run(service.reconcile_run(run.id))
+
+    assert reconciled.run.execution_status == ExecutionStatus.PR_APPROVED
+    assert reconciled.run.rag_status == RagStatus.FAILED
+    assert "RAG provisional ingestion failed" in reconciled.run.failure_details
+    assert (
+        reconciled.run.knowledge_artifact_json["promotion_history"][-1]["event"]
+        == "rag_stage_provisional"
+    )
+    assert reconciled.run.knowledge_artifact_json["promotion_history"][-1]["status"] == "failed"
+
+
+def test_pr_merge_marks_rag_failed_when_promotion_fails(orchestration_dependencies):
+    service = orchestration_dependencies["service"]
+    control_hub = orchestration_dependencies["control_hub"]
+    pr_client = orchestration_dependencies["pr_client"]
+    orchestration_dependencies["rag_client"].fail_promote = True
+
+    run = asyncio.run(
+        service.create_run(
+            CreateRunRequest(user_prompt="Refactor orchestration service", repo="agent-service")
+        )
+    )
+    control_hub.set_status(run.control_hub_approval_id, "APPROVED")
+    asyncio.run(service.reconcile_run(run.id))
+    asyncio.run(
+        service.apply_pull_request_event(
+            run.id,
+            PullRequestEventRequest(status=PullRequestStatus.APPROVED, approved_by=["reviewer"]),
+        )
+    )
+    pr_client.set_state(run.id, PullRequestState(status=PullRequestStatus.MERGED))
+
+    reconciled = asyncio.run(service.reconcile_run(run.id))
+
+    assert reconciled.run.execution_status == ExecutionStatus.MERGED
+    assert reconciled.run.rag_status == RagStatus.FAILED
+    assert "RAG promotion failed" in reconciled.run.failure_details
+    assert reconciled.run.knowledge_artifact_json["promotion_history"][-1]["event"] == "rag_promote"
+    assert reconciled.run.knowledge_artifact_json["promotion_history"][-1]["status"] == "failed"

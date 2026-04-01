@@ -7,6 +7,11 @@ Backend-only FastAPI starter with feature-first structure, migrations, and datab
 Backend:
 `cd backend && uv run uvicorn app.main:app --reload`
 
+If the target database and runtime role have not been provisioned yet, run:
+`python scripts/bootstrap_db.py`
+
+`cd backend && uv run alembic upgrade head` only applies migrations after the target database and `APP_DB_*` role already exist.
+
 ## Environment
 
 Shared settings live in `.env`.
@@ -27,15 +32,17 @@ Required app settings:
 - `DEBUG`
 - `LOG_LEVEL`
 - `CORS_ORIGINS`
+- `API_PREFIX`
 
 Deployment settings:
-- `APP_HOST` for the Uvicorn bind host. Default: `127.0.0.1` for local runs
-- `APP_PORT` for the Uvicorn port. Default: `8000`
-- `HOST_PORT` for the published Docker Compose port. Default: `8000`
+- `AGENT_SERVICE_IMAGE` for the deployed image. Default: `ghcr.io/spencerrwood/agent-service:latest`
+- `AGENT_SERVICE_BIND_HOST` for the host bind address in Docker Compose. Default: `127.0.0.1`
+- `AGENT_SERVICE_HOST_PORT` for the published Docker Compose port. Default: `8000`
 - `CODEX_COMMAND` and `COPILOT_CLI_COMMAND` for the worker adapter commands
 - `ORCHESTRATION_DRY_RUN` to keep provider execution synthetic during local development
 - `ORCHESTRATION_PROVIDER_FALLBACK_ENABLED` to retry with a secondary provider if the primary one fails
 - `AGENT_CONFIG_PATH` for the per-agent YAML configuration file. Default: `config/agents.yaml`
+- `RAG_INGESTION_ENABLED`, `RAG_INGESTION_BASE_URL`, and `RAG_INGESTION_TIMEOUT_SECONDS` for the ingestion client
 
 `PG_ADMIN_*` credentials are only used for provisioning the target database and role.
 
@@ -56,21 +63,22 @@ Repeated container starts are safe: provisioning is idempotent and migrations ru
 3. Build and start the service:
 
 ```sh
-docker compose up -d --build
+docker build -t agent-service:local .
+AGENT_SERVICE_IMAGE=agent-service:local docker compose up -d
 ```
 
 4. Or pull a published image and start it:
 
 ```sh
-APP_IMAGE=ghcr.io/<owner>/<repo>:latest docker compose up -d
+AGENT_SERVICE_IMAGE=ghcr.io/<owner>/agent-service:latest docker compose up -d
 ```
 
-The container exposes the FastAPI service directly on the published host port from `docker-compose.yml`.
+The Compose file is image-first, matching the `control-hub` deployment shape. The container exposes FastAPI directly on port `8000`, and Compose publishes it via `AGENT_SERVICE_BIND_HOST` and `AGENT_SERVICE_HOST_PORT`.
 
 ## Verification
 
 Check API health:
-`curl -i http://localhost:${HOST_PORT:-8000}/health/`
+`curl -i http://localhost:${AGENT_SERVICE_HOST_PORT:-8000}/api/health/`
 
 Check the container status:
 `docker compose ps`
@@ -84,8 +92,8 @@ This service exposes orchestration endpoints for direct API use and a thin Contr
 Run migrations and start the backend:
 
 ```sh
+python scripts/bootstrap_db.py
 cd backend
-uv run alembic upgrade head
 uv run uvicorn app.main:app --reload
 ```
 
@@ -94,7 +102,7 @@ uv run uvicorn app.main:app --reload
 Create a run directly:
 
 ```sh
-curl -X POST http://localhost:8000/orchestration/runs/ \
+curl -X POST http://localhost:8000/api/orchestration/runs/ \
   -H 'Content-Type: application/json' \
   -d '{
     "user_prompt": "Add audit logging to the orchestration flow",
@@ -110,13 +118,13 @@ curl -X POST http://localhost:8000/orchestration/runs/ \
 Reconcile a run after the approval item is approved in Control Hub:
 
 ```sh
-curl -X POST http://localhost:8000/orchestration/runs/<run_id>/reconcile
+curl -X POST http://localhost:8000/api/orchestration/runs/<run_id>/reconcile
 ```
 
 Mark a pull request approved:
 
 ```sh
-curl -X POST http://localhost:8000/orchestration/runs/<run_id>/pull-request-events \
+curl -X POST http://localhost:8000/api/orchestration/runs/<run_id>/pull-request-events \
   -H 'Content-Type: application/json' \
   -d '{
     "status": "approved",
@@ -127,7 +135,7 @@ curl -X POST http://localhost:8000/orchestration/runs/<run_id>/pull-request-even
 Mark a pull request merged:
 
 ```sh
-curl -X POST http://localhost:8000/orchestration/runs/<run_id>/pull-request-events \
+curl -X POST http://localhost:8000/api/orchestration/runs/<run_id>/pull-request-events \
   -H 'Content-Type: application/json' \
   -d '{
     "status": "merged"
@@ -141,7 +149,7 @@ Use this when Control Hub chat or a plugin needs to create and monitor orchestra
 Create a run from Control Hub chat context:
 
 ```sh
-curl -X POST http://localhost:8000/orchestration/tools/control-hub-chat/run \
+curl -X POST http://localhost:8000/api/orchestration/tools/control-hub-chat/run \
   -H 'Content-Type: application/json' \
   -d '{
     "prompt": "Add audit logging to the orchestration flow",
@@ -169,7 +177,7 @@ curl -X POST http://localhost:8000/orchestration/tools/control-hub-chat/run \
 Read run status for chat display:
 
 ```sh
-curl http://localhost:8000/orchestration/tools/control-hub-chat/run/<run_id>
+curl http://localhost:8000/api/orchestration/tools/control-hub-chat/run/<run_id>
 ```
 
 Expected workflow:
@@ -187,6 +195,15 @@ Artifact generation now stages a structured package in `knowledge_artifact_json`
 - promotion history that records when an artifact is generated, promoted, or marked stale
 
 That means later ingestion work can consume explicit staged documents and metadata instead of deriving them from a flat summary blob.
+
+## RAG Ingestion
+
+The service now includes a dedicated RAG ingestion client. When `RAG_INGESTION_ENABLED=true`, orchestration will:
+- stage provisional artifacts after PR approval by sending each generated document to `POST /ingest/text`
+- promote the artifact after merge locally in orchestration metadata
+- mark the artifact stale locally if review regresses or the PR closes
+
+The current RAG service does not expose artifact lifecycle routes, so only provisional staging is remote today. Promotion and stale transitions are recorded locally in `knowledge_artifact_json` and appended as `rag_*` receipt events in `promotion_history`.
 
 ## Provider adapter contract
 
