@@ -190,6 +190,11 @@ Expected workflow:
 
 Execution contracts now carry optional project context and a worker target from run creation through the approved work package. That gives later provider, artifact, and RAG work a stable project-scoped contract to build on.
 
+Worker targeting is now operational:
+- `worker_b` executes the approved work package through the provider adapter and opens a PR
+- `agent_c` generates and stages the artifact package directly without opening a PR
+- `auto` resolves to `agent_c` for artifact, docs, knowledge, and RAG-oriented prompts, otherwise `worker_b`
+
 Artifact generation now stages a structured package in `knowledge_artifact_json` with:
 - a manifest containing repo, project, provider, worker target, PR source, and stage metadata
 - generated markdown documents for implementation summary and operational notes

@@ -181,6 +181,24 @@ def test_create_run_persists_project_and_worker_target(orchestration_dependencie
     assert run.control_hub_approval_id == 1
 
 
+def test_create_run_resolves_auto_target_to_agent_c_for_artifact_prompts(
+    orchestration_dependencies,
+):
+    service = orchestration_dependencies["service"]
+
+    run = asyncio.run(
+        service.create_run(
+            CreateRunRequest(
+                user_prompt="Generate implementation artifacts and RAG docs",
+                repo="agent-service",
+                worker_target=WorkerTarget.AUTO,
+            )
+        )
+    )
+
+    assert run.proposal_json["worker_target"] == WorkerTarget.AGENT_C.value
+
+
 def test_reconcile_builds_project_aware_branch_strategy(orchestration_dependencies):
     service = orchestration_dependencies["service"]
     control_hub = orchestration_dependencies["control_hub"]
@@ -262,6 +280,71 @@ def test_generated_artifact_includes_project_context(orchestration_dependencies)
     assert updated.knowledge_artifact_json["manifest"]["project"]["project_slug"] == "control-hub"
     assert "control-hub" in updated.knowledge_artifact_json["manifest"]["tags"]
     assert "Project: control-hub" in updated.knowledge_artifact_json["documents"][0]["content"]
+
+
+def test_reconcile_dispatches_agent_c_without_opening_pr(orchestration_dependencies):
+    repository = orchestration_dependencies["repository"]
+    control_hub = orchestration_dependencies["control_hub"]
+    pr_client = orchestration_dependencies["pr_client"]
+    provider_router = FakeProviderRouter()
+    service = OrchestrationService(
+        repository=repository,
+        control_hub_client=control_hub,
+        provider_router=provider_router,
+        rag_client=orchestration_dependencies["rag_client"],
+        pr_state_client=pr_client,
+    )
+
+    run = asyncio.run(
+        service.create_run(
+            CreateRunRequest(
+                user_prompt="Generate a knowledge artifact bundle",
+                repo="agent-service",
+                worker_target=WorkerTarget.AGENT_C,
+            )
+        )
+    )
+    control_hub.set_status(run.control_hub_approval_id, "APPROVED")
+
+    reconciled = asyncio.run(service.reconcile_run(run.id))
+
+    assert reconciled.run.execution_status == ExecutionStatus.DOCS_STAGED
+    assert reconciled.run.rag_status == RagStatus.PROVISIONAL
+    assert reconciled.run.pr_number is None
+    assert reconciled.run.knowledge_artifact_json is not None
+    assert reconciled.run.knowledge_artifact_json["manifest"]["worker_target"] == "agent_c"
+    assert provider_router.codex_provider.calls == []
+
+
+def test_reconcile_agent_c_marks_run_failed_when_ingestion_fails(orchestration_dependencies):
+    repository = orchestration_dependencies["repository"]
+    control_hub = orchestration_dependencies["control_hub"]
+    pr_client = orchestration_dependencies["pr_client"]
+    orchestration_dependencies["rag_client"].fail_stage = True
+    service = OrchestrationService(
+        repository=repository,
+        control_hub_client=control_hub,
+        provider_router=FakeProviderRouter(),
+        rag_client=orchestration_dependencies["rag_client"],
+        pr_state_client=pr_client,
+    )
+
+    run = asyncio.run(
+        service.create_run(
+            CreateRunRequest(
+                user_prompt="Generate a knowledge artifact bundle",
+                repo="agent-service",
+                worker_target=WorkerTarget.AGENT_C,
+            )
+        )
+    )
+    control_hub.set_status(run.control_hub_approval_id, "APPROVED")
+
+    reconciled = asyncio.run(service.reconcile_run(run.id))
+
+    assert reconciled.run.execution_status == ExecutionStatus.FAILED
+    assert reconciled.run.rag_status == RagStatus.FAILED
+    assert "Agent C ingestion failed" in reconciled.run.failure_details
 
 
 def test_create_run_uses_agent_registry_defaults(orchestration_dependencies):
