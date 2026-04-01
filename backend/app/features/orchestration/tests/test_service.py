@@ -50,6 +50,11 @@ def test_pr_approval_triggers_docs_stage(orchestration_dependencies):
     assert reconciled.run.execution_status == ExecutionStatus.DOCS_STAGED
     assert reconciled.run.rag_status == RagStatus.PROVISIONAL
     assert reconciled.run.knowledge_artifact_json is not None
+    assert reconciled.run.knowledge_artifact_json["manifest"]["stage"] == "provisional"
+    assert len(reconciled.run.knowledge_artifact_json["documents"]) == 2
+    assert reconciled.run.knowledge_artifact_json["documents"][0]["path"].endswith(
+        "implementation-summary.md"
+    )
 
 
 def test_pr_merge_promotes_rag(orchestration_dependencies):
@@ -73,6 +78,9 @@ def test_pr_merge_promotes_rag(orchestration_dependencies):
 
     assert reconciled.run.execution_status == ExecutionStatus.COMPLETED
     assert reconciled.run.rag_status == RagStatus.PROMOTED
+    assert reconciled.run.knowledge_artifact_json["manifest"]["stage"] == "promoted"
+    assert reconciled.run.knowledge_artifact_json["provisional"] is False
+    assert reconciled.run.knowledge_artifact_json["promotion_history"][-1]["event"] == "promoted"
 
 
 def test_pr_changes_requested_marks_knowledge_stale(orchestration_dependencies):
@@ -100,6 +108,9 @@ def test_pr_changes_requested_marks_knowledge_stale(orchestration_dependencies):
 
     assert updated.rag_status == RagStatus.STALE
     assert updated.execution_status == ExecutionStatus.PR_OPEN
+    assert updated.knowledge_artifact_json["manifest"]["stage"] == "stale"
+    assert updated.knowledge_artifact_json["promotion_history"][-1]["event"] == "stale"
+    assert updated.knowledge_artifact_json["documents"][0]["metadata"]["stale"] is True
 
 
 def test_retry_failed_run_recreates_approval(orchestration_dependencies):
@@ -147,6 +158,7 @@ def test_create_run_persists_project_and_worker_target(orchestration_dependencie
 
     assert run.proposal_json["project"]["project_slug"] == "agent-platform"
     assert run.proposal_json["worker_target"] == WorkerTarget.WORKER_B.value
+    assert run.control_hub_approval_id == 1
 
 
 def test_reconcile_builds_project_aware_branch_strategy(orchestration_dependencies):
@@ -169,6 +181,7 @@ def test_reconcile_builds_project_aware_branch_strategy(orchestration_dependenci
     assert reconciled.run.work_package_json["project"]["project_slug"] == "control-hub"
     assert reconciled.run.work_package_json["worker_target"] == WorkerTarget.WORKER_B.value
     assert reconciled.run.branch.startswith("orchestration/agent-service/control-hub/worker-b/")
+    assert reconciled.run.knowledge_artifact_json is None
 
 
 def test_reconcile_falls_back_to_secondary_provider(orchestration_dependencies):
@@ -196,6 +209,46 @@ def test_reconcile_falls_back_to_secondary_provider(orchestration_dependencies):
     assert reconciled.run.provider == "copilot_cli"
     assert reconciled.run.execution_result_json["provider"] == "copilot_cli"
     assert "Primary provider 'codex' failed" in reconciled.run.execution_result_json["known_risks"][0]
+
+
+def test_generated_artifact_includes_project_context(orchestration_dependencies):
+    service = orchestration_dependencies["service"]
+    control_hub = orchestration_dependencies["control_hub"]
+
+    run = asyncio.run(
+        service.create_run(
+            CreateRunRequest(
+                user_prompt="Generate project-scoped artifact",
+                repo="agent-service",
+                project=ProjectContext(project_slug="control-hub", project_path="apps/control-hub"),
+            )
+        )
+    )
+    control_hub.set_status(run.control_hub_approval_id, "APPROVED")
+    asyncio.run(service.reconcile_run(run.id))
+
+    updated = asyncio.run(
+        service.apply_pull_request_event(
+            run.id,
+            PullRequestEventRequest(status=PullRequestStatus.APPROVED, approved_by=["reviewer"]),
+        )
+    )
+
+    assert updated.knowledge_artifact_json["manifest"]["project"]["project_slug"] == "control-hub"
+    assert "control-hub" in updated.knowledge_artifact_json["manifest"]["tags"]
+    assert "Project: control-hub" in updated.knowledge_artifact_json["documents"][0]["content"]
+
+
+def test_create_run_uses_agent_registry_defaults(orchestration_dependencies):
+    service = orchestration_dependencies["service"]
+    control_hub = orchestration_dependencies["control_hub"]
+
+    run = asyncio.run(service.create_run(CreateRunRequest(user_prompt="Use configured agents")))
+    approval = control_hub.items[run.control_hub_approval_id]
+
+    assert approval.requested_by == "agent-a"
+    assert approval.assigned_to == "worker-b"
+    assert run.proposal_json["worker_target"] == WorkerTarget.WORKER_B.value
 
 
 def test_reconcile_without_fallback_marks_run_failed(orchestration_dependencies):

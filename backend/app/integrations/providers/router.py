@@ -30,16 +30,48 @@ class PolicyBasedProviderRouter:
 
     @classmethod
     def from_settings(cls) -> PolicyBasedProviderRouter:
+        registry = settings.agent_registry
         runner = SubprocessCommandRunner()
-        providers: dict[str, WorkerProvider] = {
-            "codex": CodexProvider(command=settings.codex_command, runner=runner),
-            "copilot_cli": CopilotCliProvider(
-                command=settings.copilot_cli_command,
+        codex_provider_config = registry.get_provider("codex")
+        copilot_provider_config = registry.get_provider("copilot_cli")
+        worker_b_profile = registry.get_agent("worker_b")
+        providers: dict[str, WorkerProvider] = {}
+
+        if codex_provider_config is None or codex_provider_config.enabled:
+            providers["codex"] = CodexProvider(
+                command=(
+                    codex_provider_config.command
+                    if codex_provider_config is not None
+                    else settings.codex_command
+                ),
+                dry_run=(
+                    codex_provider_config.dry_run
+                    if codex_provider_config is not None
+                    else settings.orchestration_dry_run
+                ),
                 runner=runner,
-            ),
-        }
+            )
+
+        if copilot_provider_config is None or copilot_provider_config.enabled:
+            providers["copilot_cli"] = CopilotCliProvider(
+                command=(
+                    copilot_provider_config.command
+                    if copilot_provider_config is not None
+                    else settings.copilot_cli_command
+                ),
+                dry_run=(
+                    copilot_provider_config.dry_run
+                    if copilot_provider_config is not None
+                    else settings.orchestration_dry_run
+                ),
+                runner=runner,
+            )
         return cls(
-            default_provider=settings.orchestration_default_provider,
+            default_provider=(
+                worker_b_profile.default_provider.value
+                if worker_b_profile is not None and worker_b_profile.default_provider is not None
+                else settings.orchestration_default_provider
+            ),
             repo_overrides=settings.orchestration_provider_repo_overrides,
             fallback_enabled=settings.orchestration_provider_fallback_enabled,
             providers=providers,

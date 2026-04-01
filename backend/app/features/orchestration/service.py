@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import PurePosixPath
 from typing import Protocol
+from uuid import uuid4
 
 from fastapi import HTTPException, status
 
@@ -18,6 +20,9 @@ from app.features.orchestration.models import (
 from app.features.orchestration.schemas import (
     ActionType,
     ApprovedWorkPackage,
+    ArtifactFile,
+    ArtifactManifest,
+    ArtifactStage,
     ChatToolCreateRunRequest,
     ChatToolRunResponse,
     ChatToolStatusResponse,
@@ -73,8 +78,11 @@ class AgentAResult:
 class PlannerRiskAgent:
     def build_plan(self, request: CreateRunRequest) -> AgentAResult:
         repo = request.repo or settings.orchestration_default_repo
-        worker_target = request.worker_target or WorkerTarget(
-            settings.orchestration_default_worker_target
+        worker_b_profile = settings.agent_registry.get_agent("worker_b")
+        worker_target = request.worker_target or (
+            worker_b_profile.worker_target
+            if worker_b_profile is not None and worker_b_profile.worker_target is not None
+            else WorkerTarget(settings.orchestration_default_worker_target)
         )
         lowered = request.user_prompt.lower()
         risk_level = RiskLevel.HIGH if any(
@@ -122,10 +130,78 @@ class PlannerRiskAgent:
 
 class KnowledgeCaptureAgent:
     def capture(self, run: OrchestrationRun) -> KnowledgeCaptureArtifact:
+        proposal = ExecutionProposal.model_validate(run.proposal_json)
+        artifact_id = f"artifact-{uuid4().hex[:12]}"
+        generated_at = datetime.now(UTC)
+        source_pr_url = run.pr_url or ""
+        tags = [
+            run.repo,
+            run.provider.value,
+            proposal.worker_target.value,
+            proposal.project.project_slug if proposal.project and proposal.project.project_slug else "default",
+        ]
+        implementation_doc = ArtifactFile.from_content(
+            path=f"artifacts/{run.id}/implementation-summary.md",
+            media_type="text/markdown",
+            title="Implementation Summary",
+            content="\n".join(
+                [
+                    f"# Implementation Summary for {run.repo}",
+                    "",
+                    f"Run ID: {run.id}",
+                    f"Provider: {run.provider.value}",
+                    f"Worker Target: {proposal.worker_target.value}",
+                    f"Project: {self._project_label(proposal.project)}",
+                    f"PR: {source_pr_url or 'pending'}",
+                    "",
+                    "## Requested Change",
+                    run.user_prompt,
+                    "",
+                    "## Execution Summary",
+                    (run.execution_result_json or {}).get("execution_summary", "Execution summary not available."),
+                ]
+            ),
+            metadata={"kind": "implementation_summary", "provisional": True},
+        )
+        operations_doc = ArtifactFile.from_content(
+            path=f"artifacts/{run.id}/operational-notes.md",
+            media_type="text/markdown",
+            title="Operational Notes",
+            content="\n".join(
+                [
+                    f"# Operational Notes for {run.repo}",
+                    "",
+                    "## Review Gates",
+                    "- Knowledge is provisional until the PR is merged.",
+                    "- If PR approval is dismissed or changes are requested, mark the artifact stale.",
+                    "",
+                    "## Rollback Notes",
+                    *[f"- {note}" for note in proposal.rollback_notes],
+                    "",
+                    "## Acceptance Criteria",
+                    *[f"- {criterion}" for criterion in proposal.acceptance_criteria],
+                ]
+            ),
+            metadata={"kind": "operational_notes", "provisional": True},
+        )
+        manifest = ArtifactManifest(
+            artifact_id=artifact_id,
+            repo=run.repo,
+            project=proposal.project,
+            provider=run.provider,
+            worker_target=proposal.worker_target,
+            stage=ArtifactStage.PROVISIONAL,
+            generated_at=generated_at,
+            source_run_id=run.id,
+            source_pr_url=source_pr_url,
+            source_pr_number=run.pr_number,
+            tags=[tag for tag in tags if tag],
+        )
         return KnowledgeCaptureArtifact(
             implementation_summary=(
                 f"PR {run.pr_number} for repo '{run.repo}' is approved and ready for merge promotion."
             ),
+            manifest=manifest,
             operational_notes=[
                 "Knowledge is provisional until the PR is merged.",
                 "If PR approval is dismissed or changes are requested, mark the artifact stale.",
@@ -133,15 +209,105 @@ class KnowledgeCaptureAgent:
             decision_log=[
                 f"Provider selected: {run.provider.value}",
                 f"Control Hub approval: {run.control_hub_approval_id}",
+                f"Artifact generated: {artifact_id}",
             ],
             knowledge_chunks=[
                 run.plan_summary,
                 run.risk_summary,
                 f"PR URL: {run.pr_url}",
+                implementation_doc.content,
+            ],
+            documents=[implementation_doc, operations_doc],
+            promotion_history=[
+                {
+                    "event": "generated",
+                    "stage": ArtifactStage.PROVISIONAL.value,
+                    "timestamp": generated_at.isoformat(),
+                }
             ],
             source_pr_url=run.pr_url or "",
             provisional=True,
         )
+
+    def promote(self, artifact: KnowledgeCaptureArtifact) -> KnowledgeCaptureArtifact:
+        promoted_at = datetime.now(UTC)
+        promoted_manifest = artifact.manifest.model_copy(
+            update={"stage": ArtifactStage.PROMOTED, "generated_at": promoted_at}
+        )
+        promoted_documents = [
+            document.model_copy(
+                update={
+                    "metadata": {
+                        **document.metadata,
+                        "provisional": False,
+                        "promoted_at": promoted_at.isoformat(),
+                    }
+                }
+            )
+            for document in artifact.documents
+        ]
+        return artifact.model_copy(
+            update={
+                "manifest": promoted_manifest,
+                "documents": promoted_documents,
+                "promotion_history": [
+                    *artifact.promotion_history,
+                    {
+                        "event": "promoted",
+                        "stage": ArtifactStage.PROMOTED.value,
+                        "timestamp": promoted_at.isoformat(),
+                    },
+                ],
+                "provisional": False,
+            }
+        )
+
+    def mark_stale(
+        self,
+        artifact: KnowledgeCaptureArtifact,
+        *,
+        reason: str,
+        status: PullRequestStatus,
+    ) -> KnowledgeCaptureArtifact:
+        stale_at = datetime.now(UTC)
+        stale_manifest = artifact.manifest.model_copy(
+            update={"stage": ArtifactStage.STALE, "generated_at": stale_at}
+        )
+        stale_documents = [
+            document.model_copy(
+                update={
+                    "metadata": {
+                        **document.metadata,
+                        "stale": True,
+                        "stale_reason": reason,
+                        "pull_request_status": status.value,
+                        "updated_at": stale_at.isoformat(),
+                    }
+                }
+            )
+            for document in artifact.documents
+        ]
+        return artifact.model_copy(
+            update={
+                "manifest": stale_manifest,
+                "documents": stale_documents,
+                "promotion_history": [
+                    *artifact.promotion_history,
+                    {
+                        "event": "stale",
+                        "stage": ArtifactStage.STALE.value,
+                        "reason": reason,
+                        "timestamp": stale_at.isoformat(),
+                    },
+                ],
+            }
+        )
+
+    def _project_label(self, project: ProjectContext | None) -> str:
+        if project is None:
+            return "default"
+
+        return project.project_slug or project.project_id or project.project_path or "default"
 
 
 class OrchestrationService:
@@ -185,8 +351,8 @@ class OrchestrationService:
                         "worker_target": agent_result.proposal.worker_target.value,
                         "provider": provider_name.value,
                     },
-                    requested_by=request.requested_by or settings.orchestration_default_requested_by,
-                    assigned_to=request.assigned_to or settings.orchestration_default_assigned_to,
+                    requested_by=request.requested_by or self._default_requested_by(),
+                    assigned_to=request.assigned_to or self._default_assigned_to(),
                 )
             )
         except ControlHubIntegrationError as exc:
@@ -302,8 +468,8 @@ class OrchestrationService:
                         "worker_target": run.proposal_json.get("worker_target"),
                         "provider": run.provider.value,
                     },
-                    requested_by=settings.orchestration_default_requested_by,
-                    assigned_to=settings.orchestration_default_assigned_to,
+                    requested_by=self._default_requested_by(),
+                    assigned_to=self._default_assigned_to(),
                 )
             )
         except ControlHubIntegrationError as exc:
@@ -482,6 +648,9 @@ class OrchestrationService:
             if run.execution_status not in {ExecutionStatus.MERGED, ExecutionStatus.COMPLETED}:
                 run.execution_status = ExecutionStatus.MERGED
                 if run.knowledge_artifact_json:
+                    artifact = KnowledgeCaptureArtifact.model_validate(run.knowledge_artifact_json)
+                    promoted_artifact = self._knowledge_agent.promote(artifact)
+                    run.knowledge_artifact_json = promoted_artifact.model_dump(mode="json")
                     run.rag_status = RagStatus.PROMOTED
                     run.execution_status = ExecutionStatus.COMPLETED
                 changed = True
@@ -491,6 +660,17 @@ class OrchestrationService:
             PullRequestStatus.CLOSED,
         }:
             if run.knowledge_artifact_json:
+                artifact = KnowledgeCaptureArtifact.model_validate(run.knowledge_artifact_json)
+                stale_artifact = self._knowledge_agent.mark_stale(
+                    artifact,
+                    reason=(
+                        "Pull request review is no longer in an approved state."
+                        if pr_state.status != PullRequestStatus.CLOSED
+                        else "Pull request closed before merge."
+                    ),
+                    status=pr_state.status,
+                )
+                run.knowledge_artifact_json = stale_artifact.model_dump(mode="json")
                 run.rag_status = RagStatus.STALE
             if pr_state.status != PullRequestStatus.CLOSED:
                 run.execution_status = ExecutionStatus.PR_OPEN
@@ -521,6 +701,18 @@ class OrchestrationService:
         if run.execution_status == ExecutionStatus.FAILED:
             return f"Run failed. {run.failure_details or ''}".strip()
         return f"Run is currently in '{run.execution_status.value}' state."
+
+    def _default_requested_by(self) -> str:
+        agent_a_profile = settings.agent_registry.get_agent("agent_a")
+        if agent_a_profile is not None and agent_a_profile.requested_by:
+            return agent_a_profile.requested_by
+        return settings.orchestration_default_requested_by
+
+    def _default_assigned_to(self) -> str | None:
+        worker_b_profile = settings.agent_registry.get_agent("worker_b")
+        if worker_b_profile is not None and worker_b_profile.assigned_to:
+            return worker_b_profile.assigned_to
+        return settings.orchestration_default_assigned_to
 
     def _build_branch_strategy(
         self,
