@@ -39,6 +39,7 @@ Deployment settings:
 - `AGENT_SERVICE_BIND_HOST` for the host bind address in Docker Compose. Default: `127.0.0.1`
 - `AGENT_SERVICE_HOST_PORT` for the published Docker Compose port. Default: `8000`
 - `CODEX_COMMAND` and `COPILOT_CLI_COMMAND` for the worker adapter commands
+- `GIT_PROVIDER_NAME`, `GITHUB_OWNER`, `GITHUB_TOKEN`, `GITHUB_API_BASE_URL`, and `GITHUB_WEBHOOK_SECRET` for GitHub PR sync and webhook verification
 - `ORCHESTRATION_DRY_RUN` to keep provider execution synthetic during local development
 - `ORCHESTRATION_PROVIDER_FALLBACK_ENABLED` to retry with a secondary provider if the primary one fails
 - `AGENT_CONFIG_PATH` for the per-agent YAML configuration file. Default: `config/agents.yaml`
@@ -210,6 +211,26 @@ The current RAG service does not expose artifact lifecycle routes, so only provi
 When `ORCHESTRATION_DRY_RUN=false`, the service treats `CODEX_COMMAND` and `COPILOT_CLI_COMMAND` as adapter commands. It sends the approved work package JSON to the command on `stdin` and expects a JSON object on `stdout` shaped like `WorkerExecutionResult`.
 
 That keeps the FastAPI orchestration layer decoupled from the exact CLI or agent runtime used underneath while still giving the service a stable execution boundary and optional provider fallback behavior.
+
+## GitHub PR Sync
+
+When `GIT_PROVIDER_NAME=github` and both `GITHUB_OWNER` and `GITHUB_TOKEN` are configured, `reconcile` now polls GitHub for the latest pull request state after a worker opens a PR.
+
+That polling maps GitHub state into orchestration status changes:
+- open PR with no decisive review stays `open`
+- latest review requests changes becomes `changes_requested`
+- latest review approval becomes `approved`
+- merged PR becomes `merged`
+- closed unmerged PR becomes `closed`
+
+The service also exposes a GitHub webhook endpoint at:
+`POST /api/orchestration/webhooks/github`
+
+Supported webhook events today:
+- `pull_request`
+- `pull_request_review`
+
+If `GITHUB_WEBHOOK_SECRET` is set, the endpoint verifies `X-Hub-Signature-256` before processing the payload.
 
 ## Agent Configuration
 

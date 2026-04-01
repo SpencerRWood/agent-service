@@ -71,6 +71,13 @@ class OrchestrationRepository(Protocol):
 
     async def get(self, run_id: str) -> OrchestrationRun | None: ...
 
+    async def get_by_repo_and_pr_number(
+        self,
+        *,
+        repo: str,
+        pr_number: int,
+    ) -> OrchestrationRun | None: ...
+
     async def list(self, *, limit: int = 50, offset: int = 0) -> list[OrchestrationRun]: ...
 
 
@@ -548,6 +555,30 @@ class OrchestrationService:
         self, run_id: str, event: PullRequestEventRequest
     ) -> RunRead:
         run = await self._require_run(run_id)
+        changed = await self._apply_pull_request_state(
+            run,
+            PullRequestState(
+                status=event.status,
+                approved_by=event.approved_by,
+                merged_at=event.merged_at,
+                source=event.source,
+            ),
+        )
+        if changed:
+            run = await self._repository.update(run)
+        return RunRead.model_validate(run)
+
+    async def apply_pull_request_event_by_number(
+        self,
+        *,
+        repo: str,
+        pr_number: int,
+        event: PullRequestEventRequest,
+    ) -> RunRead | None:
+        run = await self._repository.get_by_repo_and_pr_number(repo=repo, pr_number=pr_number)
+        if run is None:
+            return None
+
         changed = await self._apply_pull_request_state(
             run,
             PullRequestState(

@@ -98,6 +98,22 @@ class Settings(BaseSettings):
         default="github",
         validation_alias="GIT_PROVIDER_NAME",
     )
+    github_api_base_url: str = Field(
+        default="https://api.github.com",
+        validation_alias="GITHUB_API_BASE_URL",
+    )
+    github_owner: str | None = Field(
+        default=None,
+        validation_alias="GITHUB_OWNER",
+    )
+    github_token: str | None = Field(
+        default=None,
+        validation_alias="GITHUB_TOKEN",
+    )
+    github_webhook_secret: str | None = Field(
+        default=None,
+        validation_alias="GITHUB_WEBHOOK_SECRET",
+    )
 
     postgres_host: str
     postgres_port: int

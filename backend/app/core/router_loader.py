@@ -2,6 +2,7 @@ import importlib
 import pkgutil
 
 from fastapi import FastAPI
+from fastapi.routing import APIRouter
 
 from app.core.settings import settings
 
@@ -21,6 +22,7 @@ def register_feature_routers(app: FastAPI) -> None:
                 raise
             continue
 
-        router = getattr(module, "router", None)
-        if router is not None:
-            app.include_router(router, prefix=settings.api_prefix)
+        for attribute_name in ("router", "tool_router", "webhook_router"):
+            candidate = getattr(module, attribute_name, None)
+            if isinstance(candidate, APIRouter):
+                app.include_router(candidate, prefix=settings.api_prefix)

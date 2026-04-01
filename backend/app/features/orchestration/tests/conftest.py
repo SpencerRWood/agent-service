@@ -18,7 +18,7 @@ from app.features.orchestration.models import (
     RagStatus,
     WorkerType,
 )
-from app.features.orchestration.router import router, tool_router
+from app.features.orchestration.router import router, tool_router, webhook_router
 from app.features.orchestration.schemas import PullRequestState, WorkerExecutionResult
 from app.features.orchestration.service import OrchestrationService
 from app.integrations.control_hub.client import (
@@ -52,6 +52,17 @@ class FakeRepository:
 
     async def get(self, run_id: str) -> OrchestrationRun | None:
         return self.items.get(run_id)
+
+    async def get_by_repo_and_pr_number(
+        self,
+        *,
+        repo: str,
+        pr_number: int,
+    ) -> OrchestrationRun | None:
+        for run in self.items.values():
+            if run.repo == repo and run.pr_number == pr_number:
+                return run
+        return None
 
     async def list(self, *, limit: int = 50, offset: int = 0) -> list[OrchestrationRun]:
         runs = list(self.items.values())
@@ -235,6 +246,7 @@ def client(orchestration_dependencies):
     app = FastAPI()
     app.include_router(router, prefix=settings.api_prefix)
     app.include_router(tool_router, prefix=settings.api_prefix)
+    app.include_router(webhook_router, prefix=settings.api_prefix)
     app.dependency_overrides[get_orchestration_service] = lambda: orchestration_dependencies[
         "service"
     ]
