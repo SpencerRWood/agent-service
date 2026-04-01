@@ -3,6 +3,8 @@ import pkgutil
 
 from fastapi import FastAPI
 
+from app.core.settings import settings
+
 
 def register_feature_routers(app: FastAPI) -> None:
     """Automatically discover and register routers from app.features.*."""
@@ -21,4 +23,4 @@ def register_feature_routers(app: FastAPI) -> None:
 
         router = getattr(module, "router", None)
         if router is not None:
-            app.include_router(router)
+            app.include_router(router, prefix=settings.api_prefix)

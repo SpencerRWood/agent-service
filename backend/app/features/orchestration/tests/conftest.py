@@ -8,6 +8,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from app.core.settings import settings
 from app.features.orchestration.dependencies import get_orchestration_service
 from app.features.orchestration.models import (
     ExecutionStatus,
@@ -27,6 +28,7 @@ from app.integrations.control_hub.client import (
 )
 from app.integrations.providers.base import ProviderExecutionError
 from app.integrations.providers.router import PolicyBasedProviderRouter
+from app.integrations.rag.client import RagIngestionError, RagIngestionReceipt
 
 
 class FakeRepository:
@@ -161,21 +163,69 @@ class FakePullRequestStateClient:
         self.states[run_id] = state
 
 
+class FakeRagClient:
+    def __init__(self) -> None:
+        self.fail_stage = False
+        self.fail_promote = False
+        self.fail_stale = False
+        self.receipts: list[RagIngestionReceipt] = []
+
+    async def stage_provisional(self, artifact) -> RagIngestionReceipt:
+        if self.fail_stage:
+            raise RagIngestionError("stage unavailable")
+        receipt = RagIngestionReceipt(
+            status="staged",
+            artifact_id=artifact.manifest.artifact_id,
+            operation="stage_provisional",
+            remote_id=f"remote-{artifact.manifest.artifact_id}",
+        )
+        self.receipts.append(receipt)
+        return receipt
+
+    async def promote(self, artifact) -> RagIngestionReceipt:
+        if self.fail_promote:
+            raise RagIngestionError("promote unavailable")
+        receipt = RagIngestionReceipt(
+            status="promoted",
+            artifact_id=artifact.manifest.artifact_id,
+            operation="promote",
+            remote_id=f"remote-{artifact.manifest.artifact_id}",
+        )
+        self.receipts.append(receipt)
+        return receipt
+
+    async def mark_stale(self, artifact, *, reason: str) -> RagIngestionReceipt:
+        if self.fail_stale:
+            raise RagIngestionError("stale unavailable")
+        receipt = RagIngestionReceipt(
+            status="stale",
+            artifact_id=artifact.manifest.artifact_id,
+            operation="mark_stale",
+            remote_id=f"remote-{artifact.manifest.artifact_id}",
+            metadata={"reason": reason},
+        )
+        self.receipts.append(receipt)
+        return receipt
+
+
 @pytest.fixture
 def orchestration_dependencies():
     repository = FakeRepository()
     control_hub = FakeControlHubClient()
     pr_client = FakePullRequestStateClient()
+    rag_client = FakeRagClient()
     service = OrchestrationService(
         repository=repository,
         control_hub_client=control_hub,
         provider_router=FakeProviderRouter(),
+        rag_client=rag_client,
         pr_state_client=pr_client,
     )
     return {
         "repository": repository,
         "control_hub": control_hub,
         "pr_client": pr_client,
+        "rag_client": rag_client,
         "service": service,
     }
 
@@ -183,9 +233,11 @@ def orchestration_dependencies():
 @pytest.fixture
 def client(orchestration_dependencies):
     app = FastAPI()
-    app.include_router(router)
-    app.include_router(tool_router)
-    app.dependency_overrides[get_orchestration_service] = lambda: orchestration_dependencies["service"]
+    app.include_router(router, prefix=settings.api_prefix)
+    app.include_router(tool_router, prefix=settings.api_prefix)
+    app.dependency_overrides[get_orchestration_service] = lambda: orchestration_dependencies[
+        "service"
+    ]
     return TestClient(app)
 
 

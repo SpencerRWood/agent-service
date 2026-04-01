@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     environment: str = Field(default="development", validation_alias="ENV")
     debug: bool = Field(default=False, validation_alias="DEBUG")
     log_level: str = Field(default="INFO", validation_alias="LOG_LEVEL")
-    api_prefix: str = Field(default="", validation_alias="API_PREFIX")
+    api_prefix: str = Field(default="/api", validation_alias="API_PREFIX")
     cors_origins: list[str] = Field(
         default=["http://localhost:5173"],
         validation_alias="CORS_ORIGINS",
@@ -40,6 +40,18 @@ class Settings(BaseSettings):
     control_hub_timeout_seconds: float = Field(
         default=15.0,
         validation_alias="CONTROL_HUB_TIMEOUT_SECONDS",
+    )
+    rag_ingestion_base_url: str = Field(
+        default="http://localhost:8080",
+        validation_alias="RAG_INGESTION_BASE_URL",
+    )
+    rag_ingestion_timeout_seconds: float = Field(
+        default=15.0,
+        validation_alias="RAG_INGESTION_TIMEOUT_SECONDS",
+    )
+    rag_ingestion_enabled: bool = Field(
+        default=False,
+        validation_alias="RAG_INGESTION_ENABLED",
     )
     control_hub_enable_remote_schema_check: bool = Field(
         default=False,
@@ -154,7 +166,12 @@ class Settings(BaseSettings):
 
         return [origin.strip() for origin in value.split(",") if origin.strip()]
 
-    @field_validator("debug", "control_hub_enable_remote_schema_check", mode="before")
+    @field_validator(
+        "debug",
+        "control_hub_enable_remote_schema_check",
+        "rag_ingestion_enabled",
+        mode="before",
+    )
     @classmethod
     def parse_boolish(cls, value: bool | str) -> bool:
         if isinstance(value, bool):
@@ -170,9 +187,7 @@ class Settings(BaseSettings):
 
     @field_validator("orchestration_provider_repo_overrides", mode="before")
     @classmethod
-    def parse_provider_overrides(
-        cls, value: str | dict[str, str] | None
-    ) -> dict[str, str]:
+    def parse_provider_overrides(cls, value: str | dict[str, str] | None) -> dict[str, str]:
         if value in (None, ""):
             return {}
 
@@ -183,10 +198,7 @@ class Settings(BaseSettings):
         if not isinstance(loaded, dict):
             raise ValueError("ORCHESTRATION_PROVIDER_REPO_OVERRIDES must be a JSON object")
 
-        return {
-            str(repo): str(provider)
-            for repo, provider in loaded.items()
-        }
+        return {str(repo): str(provider) for repo, provider in loaded.items()}
 
 
 settings = Settings()  # type: ignore[call-arg]

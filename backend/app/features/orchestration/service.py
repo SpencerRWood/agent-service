@@ -47,6 +47,12 @@ from app.integrations.control_hub.client import (
 )
 from app.integrations.providers.base import ProviderExecutionError
 from app.integrations.providers.router import PolicyBasedProviderRouter, ProviderRoutingError
+from app.integrations.rag.client import (
+    NoOpRagIngestionClient,
+    RagIngestionClient,
+    RagIngestionError,
+    RagIngestionReceipt,
+)
 
 
 class PullRequestStateClient(Protocol):
@@ -85,9 +91,11 @@ class PlannerRiskAgent:
             else WorkerTarget(settings.orchestration_default_worker_target)
         )
         lowered = request.user_prompt.lower()
-        risk_level = RiskLevel.HIGH if any(
-            token in lowered for token in ["delete", "drop", "migrate", "auth", "billing"]
-        ) else RiskLevel.MEDIUM
+        risk_level = (
+            RiskLevel.HIGH
+            if any(token in lowered for token in ["delete", "drop", "migrate", "auth", "billing"])
+            else RiskLevel.MEDIUM
+        )
         recommended_provider = (
             ProviderName.COPILOT_CLI if "copilot" in lowered else ProviderName.CODEX
         )
@@ -138,7 +146,9 @@ class KnowledgeCaptureAgent:
             run.repo,
             run.provider.value,
             proposal.worker_target.value,
-            proposal.project.project_slug if proposal.project and proposal.project.project_slug else "default",
+            proposal.project.project_slug
+            if proposal.project and proposal.project.project_slug
+            else "default",
         ]
         implementation_doc = ArtifactFile.from_content(
             path=f"artifacts/{run.id}/implementation-summary.md",
@@ -158,7 +168,9 @@ class KnowledgeCaptureAgent:
                     run.user_prompt,
                     "",
                     "## Execution Summary",
-                    (run.execution_result_json or {}).get("execution_summary", "Execution summary not available."),
+                    (run.execution_result_json or {}).get(
+                        "execution_summary", "Execution summary not available."
+                    ),
                 ]
             ),
             metadata={"kind": "implementation_summary", "provisional": True},
@@ -317,6 +329,7 @@ class OrchestrationService:
         repository: OrchestrationRepository,
         control_hub_client: ControlHubClient,
         provider_router: PolicyBasedProviderRouter,
+        rag_client: RagIngestionClient | None = None,
         pr_state_client: PullRequestStateClient | None = None,
         planner_agent: PlannerRiskAgent | None = None,
         knowledge_agent: KnowledgeCaptureAgent | None = None,
@@ -324,6 +337,7 @@ class OrchestrationService:
         self._repository = repository
         self._control_hub = control_hub_client
         self._provider_router = provider_router
+        self._rag_client = rag_client or NoOpRagIngestionClient()
         self._pr_state_client = pr_state_client or NullPullRequestStateClient()
         self._planner_agent = planner_agent or PlannerRiskAgent()
         self._knowledge_agent = knowledge_agent or KnowledgeCaptureAgent()
@@ -504,10 +518,15 @@ class OrchestrationService:
                     status_code=status.HTTP_502_BAD_GATEWAY,
                     detail=f"Failed to fetch Control Hub approval: {exc}",
                 ) from exc
-            if approval.status == ApprovalStatus.REJECTED and run.execution_status != ExecutionStatus.REJECTED:
+            if (
+                approval.status == ApprovalStatus.REJECTED
+                and run.execution_status != ExecutionStatus.REJECTED
+            ):
                 run.execution_status = ExecutionStatus.REJECTED
                 run.failure_details = approval.decision_reason or "Control Hub approval rejected."
-                run.rag_status = RagStatus.STALE if run.knowledge_artifact_json else RagStatus.NOT_STARTED
+                run.rag_status = (
+                    RagStatus.STALE if run.knowledge_artifact_json else RagStatus.NOT_STARTED
+                )
                 changed = True
             elif (
                 approval.status == ApprovalStatus.APPROVED
@@ -518,7 +537,7 @@ class OrchestrationService:
 
         pr_state = await self._pr_state_client.get_state(run)
         if pr_state is not None:
-            changed = self._apply_pull_request_state(run, pr_state) or changed
+            changed = await self._apply_pull_request_state(run, pr_state) or changed
 
         if changed:
             run = await self._repository.update(run)
@@ -529,7 +548,7 @@ class OrchestrationService:
         self, run_id: str, event: PullRequestEventRequest
     ) -> RunRead:
         run = await self._require_run(run_id)
-        changed = self._apply_pull_request_state(
+        changed = await self._apply_pull_request_state(
             run,
             PullRequestState(
                 status=event.status,
@@ -554,7 +573,9 @@ class OrchestrationService:
             provider = self._provider_router.get_provider(primary_provider_name)
             result = await provider.execute(work_package)
         except (ProviderExecutionError, ProviderRoutingError) as primary_exc:
-            fallback_provider_name = self._provider_router.choose_fallback_name(primary_provider_name)
+            fallback_provider_name = self._provider_router.choose_fallback_name(
+                primary_provider_name
+            )
             if fallback_provider_name is None:
                 run.execution_status = ExecutionStatus.FAILED
                 run.failure_details = f"Worker execution failed: {primary_exc}"
@@ -626,7 +647,9 @@ class OrchestrationService:
             source_metadata=run.source_metadata_json or {},
         )
 
-    def _apply_pull_request_state(self, run: OrchestrationRun, pr_state: PullRequestState) -> bool:
+    async def _apply_pull_request_state(
+        self, run: OrchestrationRun, pr_state: PullRequestState
+    ) -> bool:
         changed = False
         if pr_state.status != run.pr_status:
             run.pr_status = pr_state.status
@@ -640,9 +663,25 @@ class OrchestrationService:
             ):
                 run.execution_status = ExecutionStatus.PR_APPROVED
                 artifact = self._knowledge_agent.capture(run)
+                try:
+                    receipt = await self._rag_client.stage_provisional(artifact)
+                except RagIngestionError as exc:
+                    run.knowledge_artifact_json = self._append_rag_receipt(
+                        artifact,
+                        operation="stage_provisional",
+                        status="failed",
+                        metadata={"error": str(exc)},
+                    ).model_dump(mode="json")
+                    run.rag_status = RagStatus.FAILED
+                    run.failure_details = f"RAG provisional ingestion failed: {exc}"
+                    changed = True
+                    return changed
+
+                artifact = self._record_rag_receipt(artifact, receipt)
                 run.knowledge_artifact_json = artifact.model_dump(mode="json")
                 run.rag_status = RagStatus.PROVISIONAL
                 run.execution_status = ExecutionStatus.DOCS_STAGED
+                run.failure_details = None
                 changed = True
         elif pr_state.status == PullRequestStatus.MERGED:
             if run.execution_status not in {ExecutionStatus.MERGED, ExecutionStatus.COMPLETED}:
@@ -650,9 +689,25 @@ class OrchestrationService:
                 if run.knowledge_artifact_json:
                     artifact = KnowledgeCaptureArtifact.model_validate(run.knowledge_artifact_json)
                     promoted_artifact = self._knowledge_agent.promote(artifact)
+                    try:
+                        receipt = await self._rag_client.promote(promoted_artifact)
+                    except RagIngestionError as exc:
+                        run.knowledge_artifact_json = self._append_rag_receipt(
+                            promoted_artifact,
+                            operation="promote",
+                            status="failed",
+                            metadata={"error": str(exc)},
+                        ).model_dump(mode="json")
+                        run.rag_status = RagStatus.FAILED
+                        run.failure_details = f"RAG promotion failed: {exc}"
+                        changed = True
+                        return changed
+
+                    promoted_artifact = self._record_rag_receipt(promoted_artifact, receipt)
                     run.knowledge_artifact_json = promoted_artifact.model_dump(mode="json")
                     run.rag_status = RagStatus.PROMOTED
                     run.execution_status = ExecutionStatus.COMPLETED
+                    run.failure_details = None
                 changed = True
         elif pr_state.status in {
             PullRequestStatus.CHANGES_REQUESTED,
@@ -661,17 +716,30 @@ class OrchestrationService:
         }:
             if run.knowledge_artifact_json:
                 artifact = KnowledgeCaptureArtifact.model_validate(run.knowledge_artifact_json)
+                reason = (
+                    "Pull request review is no longer in an approved state."
+                    if pr_state.status != PullRequestStatus.CLOSED
+                    else "Pull request closed before merge."
+                )
                 stale_artifact = self._knowledge_agent.mark_stale(
                     artifact,
-                    reason=(
-                        "Pull request review is no longer in an approved state."
-                        if pr_state.status != PullRequestStatus.CLOSED
-                        else "Pull request closed before merge."
-                    ),
+                    reason=reason,
                     status=pr_state.status,
                 )
+                try:
+                    receipt = await self._rag_client.mark_stale(stale_artifact, reason=reason)
+                    stale_artifact = self._record_rag_receipt(stale_artifact, receipt)
+                    run.rag_status = RagStatus.STALE
+                except RagIngestionError as exc:
+                    stale_artifact = self._append_rag_receipt(
+                        stale_artifact,
+                        operation="mark_stale",
+                        status="failed",
+                        metadata={"reason": reason, "error": str(exc)},
+                    )
+                    run.rag_status = RagStatus.FAILED
+                    run.failure_details = f"RAG stale-mark failed: {exc}"
                 run.knowledge_artifact_json = stale_artifact.model_dump(mode="json")
-                run.rag_status = RagStatus.STALE
             if pr_state.status != PullRequestStatus.CLOSED:
                 run.execution_status = ExecutionStatus.PR_OPEN
             else:
@@ -726,7 +794,9 @@ class OrchestrationService:
         project_component = self._derive_project_component(project)
         target_component = self._sanitize_branch_component(worker_target.value)
         run_component = self._sanitize_branch_component(run_id)[:12]
-        return f"orchestration/{repo_component}/{project_component}/{target_component}/{run_component}"
+        return (
+            f"orchestration/{repo_component}/{project_component}/{target_component}/{run_component}"
+        )
 
     def _derive_project_component(self, project: ProjectContext | None) -> str:
         if project is None:
@@ -742,3 +812,40 @@ class OrchestrationService:
         sanitized = "".join(char.lower() if char.isalnum() else "-" for char in value)
         collapsed = "-".join(part for part in sanitized.split("-") if part)
         return collapsed or "default"
+
+    def _record_rag_receipt(
+        self,
+        artifact: KnowledgeCaptureArtifact,
+        receipt: RagIngestionReceipt,
+    ) -> KnowledgeCaptureArtifact:
+        return self._append_rag_receipt(
+            artifact,
+            operation=receipt.operation,
+            status=receipt.status,
+            metadata={
+                "remote_id": receipt.remote_id,
+                **receipt.metadata,
+            },
+        )
+
+    def _append_rag_receipt(
+        self,
+        artifact: KnowledgeCaptureArtifact,
+        *,
+        operation: str,
+        status: str,
+        metadata: dict[str, object] | None = None,
+    ) -> KnowledgeCaptureArtifact:
+        return artifact.model_copy(
+            update={
+                "promotion_history": [
+                    *artifact.promotion_history,
+                    {
+                        "event": f"rag_{operation}",
+                        "status": status,
+                        "timestamp": datetime.now(UTC).isoformat(),
+                        **(metadata or {}),
+                    },
+                ]
+            }
+        )

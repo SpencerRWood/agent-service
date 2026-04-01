@@ -7,9 +7,9 @@ Create Date: 2026-03-31 00:00:01
 
 from collections.abc import Sequence
 
-from alembic import op
 import sqlalchemy as sa
-
+from alembic import op
+from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
 revision: str = "20260331_000001"
@@ -18,9 +18,11 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 
-worker_type_enum = sa.Enum("code", name="worker_type_enum")
-provider_name_enum = sa.Enum("codex", "copilot_cli", name="provider_name_enum")
-pull_request_status_enum = sa.Enum(
+worker_type_enum = postgresql.ENUM("code", name="worker_type_enum", create_type=False)
+provider_name_enum = postgresql.ENUM(
+    "codex", "copilot_cli", name="provider_name_enum", create_type=False
+)
+pull_request_status_enum = postgresql.ENUM(
     "none",
     "open",
     "approved",
@@ -29,8 +31,9 @@ pull_request_status_enum = sa.Enum(
     "merged",
     "closed",
     name="pull_request_status_enum",
+    create_type=False,
 )
-execution_status_enum = sa.Enum(
+execution_status_enum = postgresql.ENUM(
     "planned",
     "awaiting_approval",
     "approved",
@@ -43,14 +46,16 @@ execution_status_enum = sa.Enum(
     "rejected",
     "failed",
     name="execution_status_enum",
+    create_type=False,
 )
-rag_status_enum = sa.Enum(
+rag_status_enum = postgresql.ENUM(
     "not_started",
     "provisional",
     "promoted",
     "stale",
     "failed",
     name="rag_status_enum",
+    create_type=False,
 )
 
 
@@ -84,8 +89,12 @@ def upgrade() -> None:
         sa.Column("work_package_json", sa.JSON(), nullable=True),
         sa.Column("execution_result_json", sa.JSON(), nullable=True),
         sa.Column("knowledge_artifact_json", sa.JSON(), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+        sa.Column(
+            "created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
+        ),
+        sa.Column(
+            "updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
+        ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_orchestration_runs")),
     )
 

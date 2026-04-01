@@ -8,6 +8,7 @@ from app.features.orchestration.repository import OrchestrationRunRepository
 from app.features.orchestration.service import NullPullRequestStateClient, OrchestrationService
 from app.integrations.control_hub.client import HttpControlHubClient
 from app.integrations.providers.router import PolicyBasedProviderRouter
+from app.integrations.rag.client import HttpRagIngestionClient
 
 
 def get_orchestration_service(
@@ -18,5 +19,6 @@ def get_orchestration_service(
         repository=repository,
         control_hub_client=HttpControlHubClient.from_settings(),
         provider_router=PolicyBasedProviderRouter.from_settings(),
+        rag_client=HttpRagIngestionClient.from_settings(),
         pr_state_client=NullPullRequestStateClient(),
     )

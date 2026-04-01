@@ -3,7 +3,7 @@ from app.features.orchestration.models import ExecutionStatus
 
 def test_create_run_endpoint(client):
     response = client.post(
-        "/orchestration/runs/",
+        "/api/orchestration/runs/",
         json={"user_prompt": "Add orchestration status endpoint", "repo": "agent-service"},
     )
 
@@ -14,9 +14,11 @@ def test_create_run_endpoint(client):
 
 
 def test_list_runs_endpoint(client):
-    client.post("/orchestration/runs/", json={"user_prompt": "Add endpoint", "repo": "agent-service"})
+    client.post(
+        "/api/orchestration/runs/", json={"user_prompt": "Add endpoint", "repo": "agent-service"}
+    )
 
-    response = client.get("/orchestration/runs/")
+    response = client.get("/api/orchestration/runs/")
 
     assert response.status_code == 200
     payload = response.json()
@@ -25,14 +27,14 @@ def test_list_runs_endpoint(client):
 
 def test_reconcile_endpoint_dispatches_execution(client, orchestration_dependencies):
     run_response = client.post(
-        "/orchestration/runs/",
+        "/api/orchestration/runs/",
         json={"user_prompt": "Implement provider routing", "repo": "agent-service"},
     )
     run_id = run_response.json()["id"]
     approval_id = run_response.json()["control_hub_approval_id"]
     orchestration_dependencies["control_hub"].set_status(approval_id, "APPROVED")
 
-    response = client.post(f"/orchestration/runs/{run_id}/reconcile")
+    response = client.post(f"/api/orchestration/runs/{run_id}/reconcile")
 
     assert response.status_code == 200
     payload = response.json()["run"]
@@ -42,7 +44,7 @@ def test_reconcile_endpoint_dispatches_execution(client, orchestration_dependenc
 
 def test_control_hub_chat_tool_endpoint(client):
     response = client.post(
-        "/orchestration/tools/control-hub-chat/run",
+        "/api/orchestration/tools/control-hub-chat/run",
         json={
             "prompt": "Add audit logging to the orchestration flow",
             "context": {
@@ -62,12 +64,12 @@ def test_control_hub_chat_tool_endpoint(client):
 
 def test_control_hub_chat_tool_status_endpoint(client):
     create_response = client.post(
-        "/orchestration/tools/control-hub-chat/run",
+        "/api/orchestration/tools/control-hub-chat/run",
         json={"prompt": "Add audit logging", "context": {"repo": "agent-service"}},
     )
     run_id = create_response.json()["run_id"]
 
-    response = client.get(f"/orchestration/tools/control-hub-chat/run/{run_id}")
+    response = client.get(f"/api/orchestration/tools/control-hub-chat/run/{run_id}")
 
     assert response.status_code == 200
     payload = response.json()
@@ -75,9 +77,11 @@ def test_control_hub_chat_tool_status_endpoint(client):
     assert "Waiting for Control Hub approval" in payload["summary"]
 
 
-def test_control_hub_chat_tool_carries_project_context_and_target(client, orchestration_dependencies):
+def test_control_hub_chat_tool_carries_project_context_and_target(
+    client, orchestration_dependencies
+):
     response = client.post(
-        "/orchestration/tools/control-hub-chat/run",
+        "/api/orchestration/tools/control-hub-chat/run",
         json={
             "prompt": "Scope execution to a project",
             "context": {

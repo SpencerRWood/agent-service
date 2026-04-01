@@ -24,6 +24,9 @@ def create_app() -> FastAPI:
         version=settings.app_version,
         debug=settings.debug,
         lifespan=lifespan,
+        openapi_url=f"{settings.api_prefix}/openapi.json",
+        docs_url=f"{settings.api_prefix}/docs",
+        redoc_url=f"{settings.api_prefix}/redoc",
     )
 
     app.add_middleware(
@@ -36,7 +39,7 @@ def create_app() -> FastAPI:
 
     register_feature_routers(app)
 
-    @app.get("/")
+    @app.get(f"{settings.api_prefix}/")
     def root():
         return {
             "name": settings.app_name,
