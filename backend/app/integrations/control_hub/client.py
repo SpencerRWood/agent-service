@@ -4,46 +4,27 @@ from collections.abc import Mapping, Sequence
 from typing import Any, Protocol
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field
 
 from app.core.settings import settings
+from app.integrations.control_hub.contract import (
+    ApprovalStatus,
+    ControlHubApprovalItemCreate,
+    ControlHubApprovalItemRead,
+    ControlHubContractError,
+)
+
+__all__ = [
+    "ApprovalStatus",
+    "ControlHubApprovalItemCreate",
+    "ControlHubApprovalItemRead",
+    "ControlHubClient",
+    "ControlHubIntegrationError",
+    "HttpControlHubClient",
+]
 
 
 class ControlHubIntegrationError(RuntimeError):
     """Raised when Control Hub cannot process a request or returns invalid data."""
-
-
-class ApprovalStatus(str):
-    PENDING = "PENDING"
-    APPROVED = "APPROVED"
-    REJECTED = "REJECTED"
-
-
-class ControlHubApprovalItemCreate(BaseModel):
-    title: str
-    description: str | None = None
-    action_type: str
-    payload_json: dict[str, Any] = Field(default_factory=dict)
-    requested_by: str
-    assigned_to: str | None = None
-
-
-class ControlHubApprovalItemRead(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    id: int
-    title: str
-    description: str | None = None
-    action_type: str
-    payload_json: dict[str, Any] = Field(default_factory=dict)
-    status: str
-    requested_by: str
-    assigned_to: str | None = None
-    created_at: str
-    updated_at: str
-    decided_at: str | None = None
-    decided_by: str | None = None
-    decision_reason: str | None = None
 
 
 class ControlHubClient(Protocol):
@@ -85,14 +66,24 @@ class HttpControlHubClient:
     async def create_approval(
         self, item: ControlHubApprovalItemCreate
     ) -> ControlHubApprovalItemRead:
-        return ControlHubApprovalItemRead.model_validate(
-            await self._request("POST", "/approvals/", json=item.model_dump(mode="json"))
-        )
+        try:
+            return ControlHubApprovalItemRead.model_validate(
+                await self._request("POST", "/approvals/", json=item.model_dump(mode="json"))
+            )
+        except ControlHubContractError as exc:
+            raise ControlHubIntegrationError(
+                f"Control Hub contract validation failed: {exc}"
+            ) from exc
 
     async def get_approval(self, item_id: int) -> ControlHubApprovalItemRead:
-        return ControlHubApprovalItemRead.model_validate(
-            await self._request("GET", f"/approvals/{item_id}")
-        )
+        try:
+            return ControlHubApprovalItemRead.model_validate(
+                await self._request("GET", f"/approvals/{item_id}")
+            )
+        except ControlHubContractError as exc:
+            raise ControlHubIntegrationError(
+                f"Control Hub contract validation failed: {exc}"
+            ) from exc
 
     async def list_approvals(
         self,
@@ -112,7 +103,12 @@ class HttpControlHubClient:
         if not isinstance(payload, list):
             raise ControlHubIntegrationError("Control Hub approvals list response was not a list")
 
-        return [ControlHubApprovalItemRead.model_validate(item) for item in payload]
+        try:
+            return [ControlHubApprovalItemRead.model_validate(item) for item in payload]
+        except ControlHubContractError as exc:
+            raise ControlHubIntegrationError(
+                f"Control Hub contract validation failed: {exc}"
+            ) from exc
 
     async def _request(
         self,
