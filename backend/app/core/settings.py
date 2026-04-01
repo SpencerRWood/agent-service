@@ -37,6 +37,10 @@ class Settings(BaseSettings):
         default="https://control.woodhost.cloud/api/openapi.json",
         validation_alias="CONTROL_HUB_OPENAPI_URL",
     )
+    control_hub_contract_path: str = Field(
+        default="../control-hub/contracts/openapi/control-hub.openapi.json",
+        validation_alias="CONTROL_HUB_CONTRACT_PATH",
+    )
     control_hub_timeout_seconds: float = Field(
         default=15.0,
         validation_alias="CONTROL_HUB_TIMEOUT_SECONDS",
@@ -132,6 +136,14 @@ class Settings(BaseSettings):
         if config_path.is_absolute():
             return config_path
         return Path(__file__).resolve().parents[3] / config_path
+
+    @computed_field
+    @property
+    def resolved_control_hub_contract_path(self) -> Path:
+        contract_path = Path(self.control_hub_contract_path)
+        if contract_path.is_absolute():
+            return contract_path
+        return (Path(__file__).resolve().parents[3] / contract_path).resolve()
 
     @computed_field
     @property

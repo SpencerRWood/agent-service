@@ -38,6 +38,7 @@ Deployment settings:
 - `AGENT_SERVICE_IMAGE` for the deployed image. Default: `ghcr.io/spencerrwood/agent-service:latest`
 - `AGENT_SERVICE_BIND_HOST` for the host bind address in Docker Compose. Default: `127.0.0.1`
 - `AGENT_SERVICE_HOST_PORT` for the published Docker Compose port. Default: `8000`
+- `CONTROL_HUB_CONTRACT_PATH` for the authoritative checked-in Control Hub OpenAPI contract
 - `CODEX_COMMAND` and `COPILOT_CLI_COMMAND` for the worker adapter commands
 - `GIT_PROVIDER_NAME`, `GITHUB_OWNER`, `GITHUB_TOKEN`, `GITHUB_API_BASE_URL`, and `GITHUB_WEBHOOK_SECRET` for GitHub PR sync and webhook verification
 - `ORCHESTRATION_DRY_RUN` to keep provider execution synthetic during local development
@@ -87,6 +88,8 @@ Check the container status:
 ## Control Hub Bridge
 
 This service exposes orchestration endpoints for direct API use and a thin Control Hub chat bridge.
+
+Control Hub is the source of truth for API contracts. This repo now validates its approval-related Control Hub payloads against the checked-in OpenAPI document at `CONTROL_HUB_CONTRACT_PATH` instead of maintaining a local copied snapshot.
 
 ### Start the service
 
