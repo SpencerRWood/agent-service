@@ -26,6 +26,19 @@ class OrchestrationRunRepository:
     async def get(self, run_id: str) -> OrchestrationRun | None:
         return await self._session.get(OrchestrationRun, run_id)
 
+    async def get_by_repo_and_pr_number(
+        self,
+        *,
+        repo: str,
+        pr_number: int,
+    ) -> OrchestrationRun | None:
+        stmt = select(OrchestrationRun).where(
+            OrchestrationRun.repo == repo,
+            OrchestrationRun.pr_number == pr_number,
+        )
+        result = await self._session.execute(stmt)
+        return result.scalar_one_or_none()
+
     async def list(self, *, limit: int = 50, offset: int = 0) -> Sequence[OrchestrationRun]:
         stmt = (
             select(OrchestrationRun)

@@ -101,3 +101,30 @@ def test_control_hub_chat_tool_carries_project_context_and_target(
     stored_run = orchestration_dependencies["repository"].items[run_id]
     assert stored_run.source_metadata_json["project"]["project_slug"] == "control-hub"
     assert stored_run.source_metadata_json["worker_target"] == "worker_b"
+
+
+def test_github_webhook_updates_run_by_pull_request_number(client, orchestration_dependencies):
+    run_response = client.post(
+        "/api/orchestration/runs/",
+        json={"user_prompt": "Implement provider routing", "repo": "agent-service"},
+    )
+    run_id = run_response.json()["id"]
+    approval_id = run_response.json()["control_hub_approval_id"]
+    orchestration_dependencies["control_hub"].set_status(approval_id, "APPROVED")
+    client.post(f"/api/orchestration/runs/{run_id}/reconcile")
+
+    response = client.post(
+        "/api/orchestration/webhooks/github",
+        headers={"X-GitHub-Event": "pull_request_review"},
+        json={
+            "action": "submitted",
+            "repository": {"name": "agent-service"},
+            "pull_request": {"number": 101},
+            "review": {"state": "approved", "user": {"login": "reviewer-b"}},
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["processed"] is True
+    assert orchestration_dependencies["repository"].items[run_id].pr_status == "approved"

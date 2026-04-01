@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 
 from app.features.orchestration.dependencies import get_orchestration_service
 from app.features.orchestration.schemas import (
@@ -15,9 +15,11 @@ from app.features.orchestration.schemas import (
     RunRead,
 )
 from app.features.orchestration.service import OrchestrationService
+from app.integrations.github.client import GitHubWebhookEvent, GitHubWebhookVerifier
 
 router = APIRouter(prefix="/orchestration/runs", tags=["orchestration"])
 tool_router = APIRouter(prefix="/orchestration/tools", tags=["orchestration-tools"])
+webhook_router = APIRouter(prefix="/orchestration/webhooks", tags=["orchestration-webhooks"])
 
 
 @router.post("/", response_model=RunRead, status_code=201)
@@ -85,3 +87,48 @@ async def get_control_hub_chat_run_status(
     service: OrchestrationService = Depends(get_orchestration_service),
 ) -> ChatToolStatusResponse:
     return await service.get_chat_tool_status(run_id)
+
+
+@webhook_router.post("/github")
+async def receive_github_webhook(
+    request: Request,
+    service: OrchestrationService = Depends(get_orchestration_service),
+    event_name: str | None = Header(default=None, alias="X-GitHub-Event"),
+    signature_256: str | None = Header(default=None, alias="X-Hub-Signature-256"),
+):
+    body = await request.body()
+    try:
+        GitHubWebhookVerifier.from_settings().verify(body, signature_256)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
+
+    payload = await request.json()
+    event = GitHubWebhookEvent.from_request(event_name=event_name, payload=payload)
+    if event is None:
+        return {"processed": False, "reason": "event_ignored"}
+
+    run = await service.apply_pull_request_event_by_number(
+        repo=event.repo,
+        pr_number=event.pr_number,
+        event=PullRequestEventRequest(
+            status=event.status,
+            approved_by=event.approved_by,
+            merged_at=event.merged_at,
+            source=f"github:{event.event_name}",
+        ),
+    )
+    if run is None:
+        return {
+            "processed": False,
+            "reason": "run_not_found",
+            "repo": event.repo,
+            "pr_number": event.pr_number,
+        }
+
+    return {
+        "processed": True,
+        "run_id": run.id,
+        "repo": event.repo,
+        "pr_number": event.pr_number,
+        "status": event.status.value,
+    }
