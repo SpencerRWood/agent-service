@@ -92,10 +92,14 @@ class PlannerRiskAgent:
     def build_plan(self, request: CreateRunRequest) -> AgentAResult:
         repo = request.repo or settings.orchestration_default_repo
         worker_b_profile = settings.agent_registry.get_agent("worker_b")
-        worker_target = request.worker_target or (
+        configured_target = request.worker_target or (
             worker_b_profile.worker_target
             if worker_b_profile is not None and worker_b_profile.worker_target is not None
             else WorkerTarget(settings.orchestration_default_worker_target)
+        )
+        worker_target = self._resolve_worker_target(
+            configured_target,
+            request.user_prompt,
         )
         lowered = request.user_prompt.lower()
         risk_level = (
@@ -141,6 +145,31 @@ class PlannerRiskAgent:
             plan_summary=f"Plan generated for repo '{repo}' from the user prompt.",
             risk_summary=proposal.risk_summary,
         )
+
+    def _resolve_worker_target(
+        self,
+        worker_target: WorkerTarget,
+        user_prompt: str,
+    ) -> WorkerTarget:
+        if worker_target != WorkerTarget.AUTO:
+            return worker_target
+
+        lowered = user_prompt.lower()
+        artifact_keywords = {
+            "artifact",
+            "artifacts",
+            "docs",
+            "documentation",
+            "knowledge",
+            "rag",
+            "ingestion",
+            "operational notes",
+            "implementation summary",
+        }
+        if any(keyword in lowered for keyword in artifact_keywords):
+            return WorkerTarget.AGENT_C
+
+        return WorkerTarget.WORKER_B
 
 
 class KnowledgeCaptureAgent:
@@ -217,9 +246,7 @@ class KnowledgeCaptureAgent:
             tags=[tag for tag in tags if tag],
         )
         return KnowledgeCaptureArtifact(
-            implementation_summary=(
-                f"PR {run.pr_number} for repo '{run.repo}' is approved and ready for merge promotion."
-            ),
+            implementation_summary=self._implementation_summary(run),
             manifest=manifest,
             operational_notes=[
                 "Knowledge is provisional until the PR is merged.",
@@ -327,6 +354,14 @@ class KnowledgeCaptureAgent:
             return "default"
 
         return project.project_slug or project.project_id or project.project_path or "default"
+
+    def _implementation_summary(self, run: OrchestrationRun) -> str:
+        if run.pr_number:
+            return f"PR {run.pr_number} for repo '{run.repo}' is approved and ready for merge promotion."
+        return (
+            f"Artifact package for repo '{run.repo}' was generated directly by Agent C "
+            "and is ready for downstream ingestion or review."
+        )
 
 
 class OrchestrationService:
@@ -539,7 +574,7 @@ class OrchestrationService:
                 approval.status == ApprovalStatus.APPROVED
                 and run.execution_status == ExecutionStatus.AWAITING_APPROVAL
             ):
-                await self._dispatch_worker(run)
+                await self._dispatch_target(run)
                 changed = True
 
         pr_state = await self._pr_state_client.get_state(run)
@@ -592,9 +627,20 @@ class OrchestrationService:
             run = await self._repository.update(run)
         return RunRead.model_validate(run)
 
-    async def _dispatch_worker(self, run: OrchestrationRun) -> None:
+    async def _dispatch_target(self, run: OrchestrationRun) -> None:
         run.execution_status = ExecutionStatus.APPROVED
         proposal = ExecutionProposal.model_validate(run.proposal_json)
+        if proposal.worker_target == WorkerTarget.AGENT_C:
+            await self._dispatch_agent_c(run, proposal)
+            return
+
+        await self._dispatch_worker_b(run, proposal)
+
+    async def _dispatch_worker_b(
+        self,
+        run: OrchestrationRun,
+        proposal: ExecutionProposal,
+    ) -> None:
         primary_provider_name = run.provider
         work_package = self._build_work_package(run, proposal, primary_provider_name)
         run.work_package_json = work_package.model_dump(mode="json")
@@ -644,6 +690,42 @@ class OrchestrationService:
 
         run.failure_details = None
         self._apply_worker_result(run, result)
+
+    async def _dispatch_agent_c(
+        self,
+        run: OrchestrationRun,
+        proposal: ExecutionProposal,
+    ) -> None:
+        work_package = self._build_work_package(run, proposal, run.provider)
+        run.work_package_json = work_package.model_dump(mode="json")
+        run.execution_status = ExecutionStatus.EXECUTING
+
+        artifact = self._knowledge_agent.capture(run)
+        run.execution_result_json = {
+            "worker_target": proposal.worker_target.value,
+            "execution_summary": "Agent C generated a knowledge artifact package directly.",
+            "generated_documents": [document.path for document in artifact.documents],
+            "artifact_id": artifact.manifest.artifact_id,
+        }
+        try:
+            receipt = await self._rag_client.stage_provisional(artifact)
+        except RagIngestionError as exc:
+            run.knowledge_artifact_json = self._append_rag_receipt(
+                artifact,
+                operation="stage_provisional",
+                status="failed",
+                metadata={"error": str(exc)},
+            ).model_dump(mode="json")
+            run.rag_status = RagStatus.FAILED
+            run.execution_status = ExecutionStatus.FAILED
+            run.failure_details = f"Agent C ingestion failed: {exc}"
+            return
+
+        artifact = self._record_rag_receipt(artifact, receipt)
+        run.knowledge_artifact_json = artifact.model_dump(mode="json")
+        run.rag_status = RagStatus.PROVISIONAL
+        run.execution_status = ExecutionStatus.DOCS_STAGED
+        run.failure_details = None
 
     def _apply_worker_result(self, run: OrchestrationRun, result: WorkerExecutionResult) -> None:
         run.branch = result.branch_name
@@ -788,10 +870,16 @@ class OrchestrationService:
 
     def _build_run_summary(self, run: OrchestrationRun) -> str:
         if run.execution_status == ExecutionStatus.AWAITING_APPROVAL:
+            proposal = ExecutionProposal.model_validate(run.proposal_json)
+            if proposal.worker_target == WorkerTarget.AGENT_C:
+                return "Waiting for Control Hub approval before Agent C can generate artifacts."
             return "Waiting for Control Hub approval before Worker B can execute."
         if run.execution_status == ExecutionStatus.PR_OPEN:
             return "Worker B opened a pull request and is waiting for human review."
         if run.execution_status == ExecutionStatus.DOCS_STAGED:
+            proposal = ExecutionProposal.model_validate(run.proposal_json)
+            if proposal.worker_target == WorkerTarget.AGENT_C and run.pr_number is None:
+                return "Agent C generated and staged provisional artifacts directly."
             return "Agent C has staged provisional docs and RAG artifacts pending merge."
         if run.execution_status == ExecutionStatus.COMPLETED:
             return "Run completed and provisional knowledge has been promoted after merge."

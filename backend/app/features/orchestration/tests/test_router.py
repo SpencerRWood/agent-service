@@ -103,6 +103,24 @@ def test_control_hub_chat_tool_carries_project_context_and_target(
     assert stored_run.source_metadata_json["worker_target"] == "worker_b"
 
 
+def test_control_hub_chat_tool_resolves_auto_target(client, orchestration_dependencies):
+    response = client.post(
+        "/api/orchestration/tools/control-hub-chat/run",
+        json={
+            "prompt": "Generate docs and artifact summaries for ingestion",
+            "context": {
+                "repo": "agent-service",
+                "worker_target": "auto",
+            },
+        },
+    )
+
+    assert response.status_code == 201
+    run_id = response.json()["run_id"]
+    stored_run = orchestration_dependencies["repository"].items[run_id]
+    assert stored_run.proposal_json["worker_target"] == "agent_c"
+
+
 def test_github_webhook_updates_run_by_pull_request_number(client, orchestration_dependencies):
     run_response = client.post(
         "/api/orchestration/runs/",

@@ -19,7 +19,7 @@ from app.features.orchestration.models import (
     WorkerType,
 )
 from app.features.orchestration.router import router, tool_router, webhook_router
-from app.features.orchestration.schemas import PullRequestState, WorkerExecutionResult
+from app.features.orchestration.schemas import PullRequestState, WorkerExecutionResult, WorkerTarget
 from app.features.orchestration.service import OrchestrationService
 from app.integrations.control_hub.client import (
     ControlHubApprovalItemCreate,
@@ -123,8 +123,10 @@ class FakeProvider:
     def __init__(self, provider_name: str, *, should_fail: bool = False) -> None:
         self.provider_name = provider_name
         self.should_fail = should_fail
+        self.calls: list[str] = []
 
     async def execute(self, work_package):
+        self.calls.append(work_package.run_id)
         if self.should_fail:
             raise ProviderExecutionError(f"{self.provider_name} exploded")
         return WorkerExecutionResult(
@@ -161,6 +163,14 @@ class FakeProviderRouter(PolicyBasedProviderRouter):
                 ),
             },
         )
+
+    @property
+    def codex_provider(self) -> FakeProvider:
+        return self._providers["codex"]  # type: ignore[return-value]
+
+    @property
+    def copilot_provider(self) -> FakeProvider:
+        return self._providers["copilot_cli"]  # type: ignore[return-value]
 
 
 class FakePullRequestStateClient:
@@ -273,6 +283,7 @@ def build_failed_run(run_id: str = "failed-run") -> OrchestrationRun:
         proposal_json={
             "requested_change_summary": "fix bug",
             "repo": "agent-service",
+            "worker_target": WorkerTarget.WORKER_B.value,
             "risk_level": "medium",
             "risk_summary": "risk",
             "rollback_notes": ["revert"],
