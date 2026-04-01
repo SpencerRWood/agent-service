@@ -11,7 +11,8 @@ from app.features.orchestration.schemas import (
     PullRequestState,
     WorkerTarget,
 )
-from app.features.orchestration.tests.conftest import build_failed_run
+from app.features.orchestration.service import OrchestrationService
+from app.features.orchestration.tests.conftest import FakeProviderRouter, build_failed_run
 
 
 def test_rejected_approval_ends_run(orchestration_dependencies):
@@ -168,3 +169,81 @@ def test_reconcile_builds_project_aware_branch_strategy(orchestration_dependenci
     assert reconciled.run.work_package_json["project"]["project_slug"] == "control-hub"
     assert reconciled.run.work_package_json["worker_target"] == WorkerTarget.WORKER_B.value
     assert reconciled.run.branch.startswith("orchestration/agent-service/control-hub/worker-b/")
+
+
+def test_reconcile_falls_back_to_secondary_provider(orchestration_dependencies):
+    repository = orchestration_dependencies["repository"]
+    control_hub = orchestration_dependencies["control_hub"]
+    pr_client = orchestration_dependencies["pr_client"]
+    service = OrchestrationService(
+        repository=repository,
+        control_hub_client=control_hub,
+        provider_router=FakeProviderRouter(
+            fallback_enabled=True,
+            failing_providers={"codex"},
+        ),
+        pr_state_client=pr_client,
+    )
+
+    run = asyncio.run(
+        service.create_run(CreateRunRequest(user_prompt="Implement provider fallback", repo="agent-service"))
+    )
+    control_hub.set_status(run.control_hub_approval_id, "APPROVED")
+
+    reconciled = asyncio.run(service.reconcile_run(run.id))
+
+    assert reconciled.run.execution_status == ExecutionStatus.PR_OPEN
+    assert reconciled.run.provider == "copilot_cli"
+    assert reconciled.run.execution_result_json["provider"] == "copilot_cli"
+    assert "Primary provider 'codex' failed" in reconciled.run.execution_result_json["known_risks"][0]
+
+
+def test_reconcile_without_fallback_marks_run_failed(orchestration_dependencies):
+    repository = orchestration_dependencies["repository"]
+    control_hub = orchestration_dependencies["control_hub"]
+    pr_client = orchestration_dependencies["pr_client"]
+    service = OrchestrationService(
+        repository=repository,
+        control_hub_client=control_hub,
+        provider_router=FakeProviderRouter(failing_providers={"codex"}),
+        pr_state_client=pr_client,
+    )
+
+    run = asyncio.run(
+        service.create_run(CreateRunRequest(user_prompt="Implement provider fallback", repo="agent-service"))
+    )
+    control_hub.set_status(run.control_hub_approval_id, "APPROVED")
+
+    reconciled = asyncio.run(service.reconcile_run(run.id))
+
+    assert reconciled.run.execution_status == ExecutionStatus.FAILED
+    assert "Worker execution failed" in reconciled.run.failure_details
+
+
+def test_create_run_surfaces_control_hub_error(orchestration_dependencies):
+    service = orchestration_dependencies["service"]
+    orchestration_dependencies["control_hub"].fail_create = True
+
+    try:
+        asyncio.run(service.create_run(CreateRunRequest(user_prompt="Add endpoint", repo="agent-service")))
+    except HTTPException as exc:
+        assert exc.status_code == 502
+        assert "Failed to create Control Hub approval" in exc.detail
+    else:  # pragma: no cover - explicit failure branch
+        raise AssertionError("create_run should surface Control Hub failures")
+
+
+def test_reconcile_surfaces_control_hub_get_error(orchestration_dependencies):
+    service = orchestration_dependencies["service"]
+    control_hub = orchestration_dependencies["control_hub"]
+
+    run = asyncio.run(service.create_run(CreateRunRequest(user_prompt="Add endpoint", repo="agent-service")))
+    control_hub.fail_get = True
+
+    try:
+        asyncio.run(service.reconcile_run(run.id))
+    except HTTPException as exc:
+        assert exc.status_code == 502
+        assert "Failed to fetch Control Hub approval" in exc.detail
+    else:  # pragma: no cover - explicit failure branch
+        raise AssertionError("reconcile_run should surface Control Hub failures")

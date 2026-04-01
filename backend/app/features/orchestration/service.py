@@ -38,8 +38,10 @@ from app.integrations.control_hub.client import (
     ApprovalStatus,
     ControlHubApprovalItemCreate,
     ControlHubClient,
+    ControlHubIntegrationError,
 )
-from app.integrations.providers.router import PolicyBasedProviderRouter
+from app.integrations.providers.base import ProviderExecutionError
+from app.integrations.providers.router import PolicyBasedProviderRouter, ProviderRoutingError
 
 
 class PullRequestStateClient(Protocol):
@@ -162,24 +164,36 @@ class OrchestrationService:
 
     async def create_run(self, request: CreateRunRequest) -> RunRead:
         agent_result = self._planner_agent.build_plan(request)
-        provider_name = self._provider_router.choose_provider_name(agent_result.proposal)
+        try:
+            provider_name = self._provider_router.choose_provider_name(agent_result.proposal)
+        except ProviderRoutingError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"Unable to route orchestration provider: {exc}",
+            ) from exc
 
-        approval = await self._control_hub.create_approval(
-            ControlHubApprovalItemCreate(
-                title=f"Approve code task for {agent_result.proposal.repo}",
-                description=agent_result.plan_summary,
-                action_type=ActionType.CODE_CHANGE.value,
-                payload_json={
-                    "user_prompt": request.user_prompt,
-                    "execution_proposal": agent_result.proposal.model_dump(mode="json"),
-                    "worker_type": WorkerType.CODE.value,
-                    "worker_target": agent_result.proposal.worker_target.value,
-                    "provider": provider_name.value,
-                },
-                requested_by=request.requested_by or settings.orchestration_default_requested_by,
-                assigned_to=request.assigned_to or settings.orchestration_default_assigned_to,
+        try:
+            approval = await self._control_hub.create_approval(
+                ControlHubApprovalItemCreate(
+                    title=f"Approve code task for {agent_result.proposal.repo}",
+                    description=agent_result.plan_summary,
+                    action_type=ActionType.CODE_CHANGE.value,
+                    payload_json={
+                        "user_prompt": request.user_prompt,
+                        "execution_proposal": agent_result.proposal.model_dump(mode="json"),
+                        "worker_type": WorkerType.CODE.value,
+                        "worker_target": agent_result.proposal.worker_target.value,
+                        "provider": provider_name.value,
+                    },
+                    requested_by=request.requested_by or settings.orchestration_default_requested_by,
+                    assigned_to=request.assigned_to or settings.orchestration_default_assigned_to,
+                )
             )
-        )
+        except ControlHubIntegrationError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Failed to create Control Hub approval: {exc}",
+            ) from exc
 
         run = OrchestrationRun(
             user_prompt=request.user_prompt,
@@ -275,21 +289,28 @@ class OrchestrationService:
                 detail="Only failed or rejected runs can be retried.",
             )
 
-        approval = await self._control_hub.create_approval(
-            ControlHubApprovalItemCreate(
-                title=f"Retry code task for {run.repo}",
-                description=reason or run.plan_summary,
-                action_type=run.action_type,
-                payload_json={
-                    "retry_of_run_id": run.id,
-                    "execution_proposal": run.proposal_json,
-                    "worker_type": run.worker_type.value,
-                    "provider": run.provider.value,
-                },
-                requested_by=settings.orchestration_default_requested_by,
-                assigned_to=settings.orchestration_default_assigned_to,
+        try:
+            approval = await self._control_hub.create_approval(
+                ControlHubApprovalItemCreate(
+                    title=f"Retry code task for {run.repo}",
+                    description=reason or run.plan_summary,
+                    action_type=run.action_type,
+                    payload_json={
+                        "retry_of_run_id": run.id,
+                        "execution_proposal": run.proposal_json,
+                        "worker_type": run.worker_type.value,
+                        "worker_target": run.proposal_json.get("worker_target"),
+                        "provider": run.provider.value,
+                    },
+                    requested_by=settings.orchestration_default_requested_by,
+                    assigned_to=settings.orchestration_default_assigned_to,
+                )
             )
-        )
+        except ControlHubIntegrationError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Failed to create Control Hub approval: {exc}",
+            ) from exc
 
         run.control_hub_approval_id = approval.id
         run.execution_status = ExecutionStatus.AWAITING_APPROVAL
@@ -310,7 +331,13 @@ class OrchestrationService:
         changed = False
 
         if run.control_hub_approval_id is not None:
-            approval = await self._control_hub.get_approval(run.control_hub_approval_id)
+            try:
+                approval = await self._control_hub.get_approval(run.control_hub_approval_id)
+            except ControlHubIntegrationError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail=f"Failed to fetch Control Hub approval: {exc}",
+                ) from exc
             if approval.status == ApprovalStatus.REJECTED and run.execution_status != ExecutionStatus.REJECTED:
                 run.execution_status = ExecutionStatus.REJECTED
                 run.failure_details = approval.decision_reason or "Control Hub approval rejected."
@@ -352,12 +379,72 @@ class OrchestrationService:
     async def _dispatch_worker(self, run: OrchestrationRun) -> None:
         run.execution_status = ExecutionStatus.APPROVED
         proposal = ExecutionProposal.model_validate(run.proposal_json)
-        provider = self._provider_router.get_provider(run.provider)
+        primary_provider_name = run.provider
+        work_package = self._build_work_package(run, proposal, primary_provider_name)
+        run.work_package_json = work_package.model_dump(mode="json")
+        run.execution_status = ExecutionStatus.EXECUTING
 
-        work_package = ApprovedWorkPackage(
+        try:
+            provider = self._provider_router.get_provider(primary_provider_name)
+            result = await provider.execute(work_package)
+        except (ProviderExecutionError, ProviderRoutingError) as primary_exc:
+            fallback_provider_name = self._provider_router.choose_fallback_name(primary_provider_name)
+            if fallback_provider_name is None:
+                run.execution_status = ExecutionStatus.FAILED
+                run.failure_details = f"Worker execution failed: {primary_exc}"
+                return
+
+            fallback_work_package = self._build_work_package(run, proposal, fallback_provider_name)
+            run.work_package_json = fallback_work_package.model_dump(mode="json")
+            try:
+                fallback_provider = self._provider_router.get_provider(fallback_provider_name)
+                result = await fallback_provider.execute(fallback_work_package)
+            except (ProviderExecutionError, ProviderRoutingError) as fallback_exc:
+                run.execution_status = ExecutionStatus.FAILED
+                run.failure_details = (
+                    "Worker execution failed. "
+                    f"Primary provider '{primary_provider_name.value}': {primary_exc}. "
+                    f"Fallback provider '{fallback_provider_name.value}': {fallback_exc}."
+                )
+                return
+
+            run.provider = fallback_provider_name
+            result = result.model_copy(
+                update={
+                    "known_risks": [
+                        f"Primary provider '{primary_provider_name.value}' failed and fallback provider '{fallback_provider_name.value}' handled execution.",
+                        *result.known_risks,
+                    ]
+                }
+            )
+            self._apply_worker_result(run, result)
+            return
+        except Exception as exc:  # pragma: no cover - defensive guard
+            run.execution_status = ExecutionStatus.FAILED
+            run.failure_details = f"Worker execution failed: {exc}"
+            return
+
+        run.failure_details = None
+        self._apply_worker_result(run, result)
+
+    def _apply_worker_result(self, run: OrchestrationRun, result: WorkerExecutionResult) -> None:
+        run.branch = result.branch_name
+        run.pr_url = result.pr_url
+        run.pr_number = result.pr_number
+        run.pr_status = PullRequestStatus.OPEN
+        run.execution_status = ExecutionStatus.PR_OPEN
+        run.execution_result_json = result.model_dump(mode="json")
+
+    def _build_work_package(
+        self,
+        run: OrchestrationRun,
+        proposal: ExecutionProposal,
+        provider_name: ProviderName,
+    ) -> ApprovedWorkPackage:
+        return ApprovedWorkPackage(
             run_id=run.id,
             approval_id=run.control_hub_approval_id or 0,
-            provider=run.provider,
+            provider=provider_name,
             repo=run.repo,
             project=proposal.project,
             worker_target=proposal.worker_target,
@@ -372,25 +459,6 @@ class OrchestrationService:
             acceptance_criteria=proposal.acceptance_criteria,
             source_metadata=run.source_metadata_json or {},
         )
-        run.work_package_json = work_package.model_dump(mode="json")
-        run.execution_status = ExecutionStatus.EXECUTING
-
-        try:
-            result = await provider.execute(work_package)
-        except Exception as exc:  # pragma: no cover - defensive guard
-            run.execution_status = ExecutionStatus.FAILED
-            run.failure_details = f"Worker execution failed: {exc}"
-            return
-
-        self._apply_worker_result(run, result)
-
-    def _apply_worker_result(self, run: OrchestrationRun, result: WorkerExecutionResult) -> None:
-        run.branch = result.branch_name
-        run.pr_url = result.pr_url
-        run.pr_number = result.pr_number
-        run.pr_status = PullRequestStatus.OPEN
-        run.execution_status = ExecutionStatus.PR_OPEN
-        run.execution_result_json = result.model_dump(mode="json")
 
     def _apply_pull_request_state(self, run: OrchestrationRun, pr_state: PullRequestState) -> bool:
         changed = False
