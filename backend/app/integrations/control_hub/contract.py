@@ -72,6 +72,14 @@ class ControlHubApprovalItemRead(ControlHubSchemaModel):
     schema_name = "ApprovalItemRead"
 
 
+class ControlHubApprovalItemApprove(ControlHubSchemaModel):
+    schema_name = "ApprovalItemApprove"
+
+
+class ControlHubApprovalItemReject(ControlHubSchemaModel):
+    schema_name = "ApprovalItemReject"
+
+
 class ControlHubContract:
     def __init__(self, document: Mapping[str, Any]) -> None:
         self.document = dict(document)

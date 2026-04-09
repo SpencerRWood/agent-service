@@ -47,13 +47,21 @@ from app.integrations.control_hub.client import (
     ControlHubClient,
     ControlHubIntegrationError,
 )
-from app.integrations.providers.base import ProviderExecutionError
 from app.integrations.providers.router import PolicyBasedProviderRouter, ProviderRoutingError
 from app.integrations.rag.client import (
     NoOpRagIngestionClient,
     RagIngestionClient,
-    RagIngestionError,
     RagIngestionReceipt,
+)
+from app.platform.execution_targets.dispatcher import (
+    NullRemoteExecutionDispatcher,
+    RemoteExecutionDispatcher,
+)
+from app.platform.tools.runtime import (
+    ToolExecutionError,
+    ToolRuntime,
+    parse_rag_receipt,
+    parse_worker_execution_result,
 )
 
 logger = get_logger(__name__)
@@ -380,6 +388,8 @@ class OrchestrationService:
         planner_agent: PlannerRiskAgent | None = None,
         knowledge_agent: KnowledgeCaptureAgent | None = None,
         platform_recorder: PlatformRecorder | None = None,
+        tool_runtime: ToolRuntime | None = None,
+        remote_dispatcher: RemoteExecutionDispatcher | NullRemoteExecutionDispatcher | None = None,
     ) -> None:
         self._repository = repository
         self._control_hub = control_hub_client
@@ -389,6 +399,11 @@ class OrchestrationService:
         self._planner_agent = planner_agent or PlannerRiskAgent()
         self._knowledge_agent = knowledge_agent or KnowledgeCaptureAgent()
         self._platform_recorder = platform_recorder or NullPlatformRecorder()
+        self._tool_runtime = tool_runtime or ToolRuntime.from_dependencies(
+            provider_router=self._provider_router,
+            rag_client=self._rag_client,
+            remote_dispatcher=remote_dispatcher or NullRemoteExecutionDispatcher(),
+        )
 
     async def create_run(self, request: CreateRunRequest) -> RunRead:
         logger.info(
@@ -828,78 +843,27 @@ class OrchestrationService:
         )
 
         try:
-            provider = self._provider_router.get_provider(primary_provider_name)
-            result = await provider.execute(work_package)
-        except (ProviderExecutionError, ProviderRoutingError) as primary_exc:
-            fallback_provider_name = self._provider_router.choose_fallback_name(
-                primary_provider_name
+            result_payload = await self._tool_runtime.execute(
+                "agent.execute_coding_task",
+                {"work_package": work_package.model_dump(mode="json")},
             )
-            if fallback_provider_name is None:
-                run.execution_status = ExecutionStatus.FAILED
-                run.failure_details = f"Worker execution failed: {primary_exc}"
-                await self._platform_recorder.record_execution_failure(
-                    run,
-                    detail=run.failure_details,
-                )
-                logger.warning(
-                    "Worker B execution failed without fallback",
-                    extra={
-                        "event": "orchestration_worker_b_execution_failed",
-                        "run_id": run.id,
-                        "repo": run.repo,
-                        "provider": primary_provider_name.value,
-                    },
-                )
-                return
-
-            fallback_work_package = self._build_work_package(run, proposal, fallback_provider_name)
-            run.work_package_json = fallback_work_package.model_dump(mode="json")
+            result = parse_worker_execution_result(result_payload)
+        except ToolExecutionError as exc:
+            run.execution_status = ExecutionStatus.FAILED
+            run.failure_details = f"Worker execution failed: {exc}"
+            await self._platform_recorder.record_execution_failure(
+                run,
+                detail=run.failure_details,
+            )
             logger.warning(
-                "Worker B execution falling back to alternate provider",
+                "Worker B execution failed",
                 extra={
-                    "event": "orchestration_worker_b_fallback_started",
+                    "event": "orchestration_worker_b_execution_failed",
                     "run_id": run.id,
                     "repo": run.repo,
                     "provider": primary_provider_name.value,
-                    "fallback_provider": fallback_provider_name.value,
                 },
             )
-            try:
-                fallback_provider = self._provider_router.get_provider(fallback_provider_name)
-                result = await fallback_provider.execute(fallback_work_package)
-            except (ProviderExecutionError, ProviderRoutingError) as fallback_exc:
-                run.execution_status = ExecutionStatus.FAILED
-                run.failure_details = (
-                    "Worker execution failed. "
-                    f"Primary provider '{primary_provider_name.value}': {primary_exc}. "
-                    f"Fallback provider '{fallback_provider_name.value}': {fallback_exc}."
-                )
-                await self._platform_recorder.record_execution_failure(
-                    run,
-                    detail=run.failure_details,
-                )
-                logger.warning(
-                    "Worker B execution failed after fallback",
-                    extra={
-                        "event": "orchestration_worker_b_fallback_failed",
-                        "run_id": run.id,
-                        "repo": run.repo,
-                        "provider": primary_provider_name.value,
-                        "fallback_provider": fallback_provider_name.value,
-                    },
-                )
-                return
-
-            run.provider = fallback_provider_name
-            result = result.model_copy(
-                update={
-                    "known_risks": [
-                        f"Primary provider '{primary_provider_name.value}' failed and fallback provider '{fallback_provider_name.value}' handled execution.",
-                        *result.known_risks,
-                    ]
-                }
-            )
-            self._apply_worker_result(run, result)
             return
         except Exception as exc:  # pragma: no cover - defensive guard
             run.execution_status = ExecutionStatus.FAILED
@@ -955,8 +919,12 @@ class OrchestrationService:
             "artifact_id": artifact.manifest.artifact_id,
         }
         try:
-            receipt = await self._rag_client.stage_provisional(artifact)
-        except RagIngestionError as exc:
+            receipt_payload = await self._tool_runtime.execute(
+                "rag.stage_provisional_artifact",
+                {"artifact": artifact.model_dump(mode="json")},
+            )
+            receipt = parse_rag_receipt(receipt_payload)
+        except ToolExecutionError as exc:
             run.knowledge_artifact_json = self._append_rag_receipt(
                 artifact,
                 operation="stage_provisional",
@@ -1010,6 +978,7 @@ class OrchestrationService:
         )
 
     def _apply_worker_result(self, run: OrchestrationRun, result: WorkerExecutionResult) -> None:
+        run.provider = ProviderName(result.provider)
         run.branch = result.branch_name
         run.pr_url = result.pr_url
         run.pr_number = result.pr_number
@@ -1073,8 +1042,12 @@ class OrchestrationService:
                 run.execution_status = ExecutionStatus.PR_APPROVED
                 artifact = self._knowledge_agent.capture(run)
                 try:
-                    receipt = await self._rag_client.stage_provisional(artifact)
-                except RagIngestionError as exc:
+                    receipt_payload = await self._tool_runtime.execute(
+                        "rag.stage_provisional_artifact",
+                        {"artifact": artifact.model_dump(mode="json")},
+                    )
+                    receipt = parse_rag_receipt(receipt_payload)
+                except ToolExecutionError as exc:
                     run.knowledge_artifact_json = self._append_rag_receipt(
                         artifact,
                         operation="stage_provisional",
@@ -1104,8 +1077,12 @@ class OrchestrationService:
                     artifact = KnowledgeCaptureArtifact.model_validate(run.knowledge_artifact_json)
                     promoted_artifact = self._knowledge_agent.promote(artifact)
                     try:
-                        receipt = await self._rag_client.promote(promoted_artifact)
-                    except RagIngestionError as exc:
+                        receipt_payload = await self._tool_runtime.execute(
+                            "rag.promote_artifact",
+                            {"artifact": promoted_artifact.model_dump(mode="json")},
+                        )
+                        receipt = parse_rag_receipt(receipt_payload)
+                    except ToolExecutionError as exc:
                         run.knowledge_artifact_json = self._append_rag_receipt(
                             promoted_artifact,
                             operation="promote",
@@ -1146,10 +1123,17 @@ class OrchestrationService:
                     status=pr_state.status,
                 )
                 try:
-                    receipt = await self._rag_client.mark_stale(stale_artifact, reason=reason)
+                    receipt_payload = await self._tool_runtime.execute(
+                        "rag.mark_artifact_stale",
+                        {
+                            "artifact": stale_artifact.model_dump(mode="json"),
+                            "reason": reason,
+                        },
+                    )
+                    receipt = parse_rag_receipt(receipt_payload)
                     stale_artifact = self._record_rag_receipt(stale_artifact, receipt)
                     run.rag_status = RagStatus.STALE
-                except RagIngestionError as exc:
+                except ToolExecutionError as exc:
                     stale_artifact = self._append_rag_receipt(
                         stale_artifact,
                         operation="mark_stale",

@@ -9,8 +9,10 @@ from app.core.logging import get_logger
 from app.core.settings import settings
 from app.integrations.control_hub.contract import (
     ApprovalStatus,
+    ControlHubApprovalItemApprove,
     ControlHubApprovalItemCreate,
     ControlHubApprovalItemRead,
+    ControlHubApprovalItemReject,
     ControlHubContractError,
 )
 
@@ -36,6 +38,22 @@ class ControlHubClient(Protocol):
     ) -> ControlHubApprovalItemRead: ...
 
     async def get_approval(self, item_id: int) -> ControlHubApprovalItemRead: ...
+
+    async def approve_approval(
+        self,
+        item_id: int,
+        *,
+        decided_by: str,
+        decision_reason: str | None = None,
+    ) -> ControlHubApprovalItemRead: ...
+
+    async def reject_approval(
+        self,
+        item_id: int,
+        *,
+        decided_by: str,
+        decision_reason: str,
+    ) -> ControlHubApprovalItemRead: ...
 
     async def list_approvals(
         self,
@@ -82,6 +100,54 @@ class HttpControlHubClient:
         try:
             return ControlHubApprovalItemRead.model_validate(
                 await self._request("GET", f"/approvals/{item_id}")
+            )
+        except ControlHubContractError as exc:
+            raise ControlHubIntegrationError(
+                f"Control Hub contract validation failed: {exc}"
+            ) from exc
+
+    async def approve_approval(
+        self,
+        item_id: int,
+        *,
+        decided_by: str,
+        decision_reason: str | None = None,
+    ) -> ControlHubApprovalItemRead:
+        body = ControlHubApprovalItemApprove(
+            decided_by=decided_by,
+            decision_reason=decision_reason,
+        )
+        try:
+            return ControlHubApprovalItemRead.model_validate(
+                await self._request(
+                    "POST",
+                    f"/approvals/{item_id}/approve",
+                    json=body.model_dump(mode="json"),
+                )
+            )
+        except ControlHubContractError as exc:
+            raise ControlHubIntegrationError(
+                f"Control Hub contract validation failed: {exc}"
+            ) from exc
+
+    async def reject_approval(
+        self,
+        item_id: int,
+        *,
+        decided_by: str,
+        decision_reason: str,
+    ) -> ControlHubApprovalItemRead:
+        body = ControlHubApprovalItemReject(
+            decided_by=decided_by,
+            decision_reason=decision_reason,
+        )
+        try:
+            return ControlHubApprovalItemRead.model_validate(
+                await self._request(
+                    "POST",
+                    f"/approvals/{item_id}/reject",
+                    json=body.model_dump(mode="json"),
+                )
             )
         except ControlHubContractError as exc:
             raise ControlHubIntegrationError(

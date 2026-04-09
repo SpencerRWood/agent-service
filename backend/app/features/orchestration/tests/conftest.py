@@ -106,6 +106,42 @@ class FakeControlHubClient:
             raise ControlHubIntegrationError("get approval unavailable")
         return self.items[item_id]
 
+    async def approve_approval(
+        self,
+        item_id: int,
+        *,
+        decided_by: str,
+        decision_reason: str | None = None,
+    ) -> ControlHubApprovalItemRead:
+        self.set_status(item_id, "APPROVED", reason=decision_reason)
+        item = self.items[item_id]
+        self.items[item_id] = item.model_copy(
+            update={
+                "decided_by": decided_by,
+                "decided_at": datetime.now(UTC).isoformat(),
+                "decision_reason": decision_reason,
+            }
+        )
+        return self.items[item_id]
+
+    async def reject_approval(
+        self,
+        item_id: int,
+        *,
+        decided_by: str,
+        decision_reason: str,
+    ) -> ControlHubApprovalItemRead:
+        self.set_status(item_id, "REJECTED", reason=decision_reason)
+        item = self.items[item_id]
+        self.items[item_id] = item.model_copy(
+            update={
+                "decided_by": decided_by,
+                "decided_at": datetime.now(UTC).isoformat(),
+                "decision_reason": decision_reason,
+            }
+        )
+        return self.items[item_id]
+
     async def list_approvals(self, **_: object) -> list[ControlHubApprovalItemRead]:
         return list(self.items.values())
 

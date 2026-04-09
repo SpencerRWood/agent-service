@@ -118,6 +118,26 @@ class Settings(BaseSettings):
         default=None,
         validation_alias="GITHUB_WEBHOOK_SECRET",
     )
+    default_execution_target: str | None = Field(
+        default=None,
+        validation_alias="DEFAULT_EXECUTION_TARGET",
+    )
+    worker_secret_refs: dict[str, str] = Field(
+        default_factory=dict,
+        validation_alias="WORKER_SECRET_REFS",
+    )
+    remote_execution_poll_interval_seconds: float = Field(
+        default=2.0,
+        validation_alias="REMOTE_EXECUTION_POLL_INTERVAL_SECONDS",
+    )
+    remote_execution_wait_timeout_seconds: float = Field(
+        default=900.0,
+        validation_alias="REMOTE_EXECUTION_WAIT_TIMEOUT_SECONDS",
+    )
+    remote_execution_online_threshold_seconds: float = Field(
+        default=30.0,
+        validation_alias="REMOTE_EXECUTION_ONLINE_THRESHOLD_SECONDS",
+    )
 
     postgres_host: str
     postgres_port: int
@@ -227,6 +247,24 @@ class Settings(BaseSettings):
             raise ValueError("ORCHESTRATION_PROVIDER_REPO_OVERRIDES must be a JSON object")
 
         return {str(repo): str(provider) for repo, provider in loaded.items()}
+
+    @field_validator("worker_secret_refs", mode="before")
+    @classmethod
+    def parse_worker_secret_refs(
+        cls,
+        value: str | dict[str, str] | None,
+    ) -> dict[str, str]:
+        if value in (None, ""):
+            return {}
+
+        if isinstance(value, dict):
+            return {str(secret_id): str(secret_value) for secret_id, secret_value in value.items()}
+
+        loaded = json.loads(value)
+        if not isinstance(loaded, dict):
+            raise ValueError("WORKER_SECRET_REFS must be a JSON object")
+
+        return {str(secret_id): str(secret_value) for secret_id, secret_value in loaded.items()}
 
 
 settings = Settings()  # type: ignore[call-arg]

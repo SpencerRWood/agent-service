@@ -1,11 +1,14 @@
-# Service Template
+# Agent Service
 
-Backend-only FastAPI starter with feature-first structure, migrations, and database provisioning scripts.
+FastAPI-based agent control plane with generic interaction APIs, execution target routing, remote worker support, and an admin frontend for execution-target operations.
 
 ## Local development
 
 Backend:
 `cd backend && uv run uvicorn app.main:app --reload`
+
+Admin frontend:
+`cd frontend && npm install && npm run dev`
 
 If the target database and runtime role have not been provisioned yet, run:
 `python scripts/bootstrap_db.py`
@@ -36,8 +39,9 @@ Required app settings:
 
 Deployment settings:
 - `AGENT_SERVICE_IMAGE` for the deployed image. Default: `ghcr.io/spencerrwood/agent-service:latest`
+- `AGENT_SERVICE_ADMIN_IMAGE` for the web/admin image that serves the frontend and proxies `/api/*` internally. Default: `ghcr.io/spencerrwood/agent-service-admin:latest`
 - `AGENT_SERVICE_BIND_HOST` for the host bind address in Docker Compose. Default: `127.0.0.1`
-- `AGENT_SERVICE_HOST_PORT` for the published Docker Compose port. Default: `8000`
+- `AGENT_SERVICE_HOST_PORT` for the single published Docker Compose port. Default: `8080`
 - `CONTROL_HUB_CONTRACT_PATH` for the authoritative checked-in Control Hub OpenAPI contract
 - `CODEX_COMMAND` and `COPILOT_CLI_COMMAND` for the worker adapter commands
 - `GIT_PROVIDER_NAME`, `GITHUB_OWNER`, `GITHUB_TOKEN`, `GITHUB_API_BASE_URL`, and `GITHUB_WEBHOOK_SECRET` for GitHub PR sync and webhook verification
@@ -45,6 +49,9 @@ Deployment settings:
 - `ORCHESTRATION_PROVIDER_FALLBACK_ENABLED` to retry with a secondary provider if the primary one fails
 - `AGENT_CONFIG_PATH` for the per-agent YAML configuration file. Default: `config/agents.yaml`
 - `RAG_INGESTION_ENABLED`, `RAG_INGESTION_BASE_URL`, and `RAG_INGESTION_TIMEOUT_SECONDS` for the ingestion client
+- `DEFAULT_EXECUTION_TARGET` for the preferred remote execution target
+- `WORKER_SECRET_REFS` for worker target secret references encoded as a JSON object
+- `REMOTE_EXECUTION_POLL_INTERVAL_SECONDS`, `REMOTE_EXECUTION_WAIT_TIMEOUT_SECONDS`, and `REMOTE_EXECUTION_ONLINE_THRESHOLD_SECONDS` for remote worker timing and health behavior
 
 `PG_ADMIN_*` credentials are only used for provisioning the target database and role.
 
@@ -62,28 +69,86 @@ Repeated container starts are safe: provisioning is idempotent and migrations ru
 
 1. Create `.env` from `.env.example` and fill in the required values.
 2. Confirm the target Postgres server already exists and is reachable from the container host.
-3. Build and start the service:
+3. Build and start the service stack:
 
 ```sh
 docker build -t agent-service:local .
-AGENT_SERVICE_IMAGE=agent-service:local docker compose up -d
+docker build -f frontend/Dockerfile -t agent-service-admin:local .
+AGENT_SERVICE_IMAGE=agent-service:local AGENT_SERVICE_ADMIN_IMAGE=agent-service-admin:local docker compose up -d
 ```
 
 4. Or pull a published image and start it:
 
 ```sh
-AGENT_SERVICE_IMAGE=ghcr.io/<owner>/agent-service:latest docker compose up -d
+AGENT_SERVICE_IMAGE=ghcr.io/<owner>/agent-service:latest \
+AGENT_SERVICE_ADMIN_IMAGE=ghcr.io/<owner>/agent-service-admin:latest \
+docker compose up -d
 ```
 
-The Compose file is image-first, matching the `control-hub` deployment shape. The container exposes FastAPI directly on port `8000`, and Compose publishes it via `AGENT_SERVICE_BIND_HOST` and `AGENT_SERVICE_HOST_PORT`.
+The Compose file now includes:
+- `app` for the FastAPI control plane on the internal Docker network
+- `agents` as the single public web entrypoint on port `8080`
+- `promtail` for optional log shipping
+
+Route your public reverse proxy to the single published `agents` port. The frontend serves the UI and proxies `/api/*` back to the FastAPI backend internally, so you only need one upstream port for `agents.woodhost.cloud`.
 
 ## Verification
 
 Check API health:
-`curl -i http://localhost:${AGENT_SERVICE_HOST_PORT:-8000}/api/health/`
+`curl -i http://localhost:${AGENT_SERVICE_HOST_PORT:-8080}/api/health/`
 
 Check the container status:
 `docker compose ps`
+
+Check the web entrypoint:
+`curl -i http://localhost:${AGENT_SERVICE_HOST_PORT:-8080}/`
+
+## Generic Interaction API
+
+The generic chat-client surface is mounted at:
+- `/api/interaction`
+- `/api/interaction/openapi.json`
+- `/api/interaction/docs`
+
+Core endpoints:
+- `POST /api/interaction/requests`
+- `GET /api/interaction/requests/{run_id}`
+- `POST /api/interaction/requests/{run_id}/approve`
+- `POST /api/interaction/requests/{run_id}/reject`
+- `POST /api/interaction/requests/{run_id}/reconcile`
+- `POST /api/interaction/requests/{run_id}/pull-request-events`
+
+Open WebUI or any other client should connect to the generic interaction OpenAPI document rather than a product-specific route.
+
+## Execution Targets and Workers
+
+Execution targets are first-class routing resources. They can represent your MacBook, a future GPU node, or any other worker-backed execution plane.
+
+Admin API:
+- `POST /api/admin/execution-targets/`
+- `GET /api/admin/execution-targets/`
+- `PATCH /api/admin/execution-targets/{target_id}`
+- `GET /api/admin/execution-targets/{target_id}/health`
+- `GET /api/admin/execution-jobs/`
+- `GET /api/admin/execution-jobs/{job_id}`
+
+Worker API:
+- `POST /api/worker/execution-targets/{target_id}/heartbeat`
+- `POST /api/worker/execution-targets/{target_id}/jobs/claim`
+- `POST /api/worker/execution-targets/{target_id}/jobs/{job_id}/complete`
+- `POST /api/worker/execution-targets/{target_id}/jobs/{job_id}/fail`
+
+The included lightweight worker script is:
+`scripts/run_worker_agent.py`
+
+For macOS production use, install the worker with:
+`scripts/install_worker_launchd.sh`
+
+The launchd template lives at:
+`deploy/macos/com.woodhost.agent-worker.plist`
+
+Dashy-friendly worker health can be read from:
+`GET /api/admin/execution-targets/<target_id>/health`
 
 ## Control Hub Bridge
 

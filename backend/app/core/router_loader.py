@@ -22,7 +22,13 @@ def register_feature_routers(app: FastAPI) -> None:
                     raise
                 continue
 
-            for attribute_name in ("router", "tool_router", "webhook_router"):
+            for attribute_name in (
+                "router",
+                "tool_router",
+                "webhook_router",
+                "worker_router",
+                "job_router",
+            ):
                 candidate = getattr(module, attribute_name, None)
                 if isinstance(candidate, APIRouter):
                     app.include_router(candidate, prefix=settings.api_prefix)

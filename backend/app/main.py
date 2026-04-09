@@ -10,6 +10,7 @@ from app.integrations.control_hub.contract import (
     assert_local_contract_compatible,
     validate_remote_openapi_if_enabled,
 )
+from app.projections.interaction.app import create_interaction_app
 
 configure_logging(
     level=settings.log_level,
@@ -63,6 +64,7 @@ def create_app() -> FastAPI:
     app.middleware("http")(log_request_middleware)
 
     register_feature_routers(app)
+    app.mount(f"{settings.api_prefix}/interaction", create_interaction_app())
 
     @app.get(f"{settings.api_prefix}/")
     def root():
