@@ -1,0 +1,20 @@
+server:
+  http_listen_port: 9081
+  grpc_listen_port: 0
+
+positions:
+  filename: /workspace/.devcontainer/promtail-positions.yaml
+
+clients:
+  - url: ${LOKI_PUSH_URL}
+
+scrape_configs:
+  - job_name: devcontainer-files
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: devcontainer
+          service: ${LOGGING_SERVICE}
+          environment: ${LOGGING_ENVIRONMENT}
+          __path__: /workspace/.devcontainer/*.log

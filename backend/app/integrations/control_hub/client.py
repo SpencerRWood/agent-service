@@ -5,6 +5,7 @@ from typing import Any, Protocol
 
 import httpx
 
+from app.core.logging import get_logger
 from app.core.settings import settings
 from app.integrations.control_hub.contract import (
     ApprovalStatus,
@@ -21,6 +22,8 @@ __all__ = [
     "ControlHubIntegrationError",
     "HttpControlHubClient",
 ]
+
+logger = get_logger(__name__)
 
 
 class ControlHubIntegrationError(RuntimeError):
@@ -118,6 +121,14 @@ class HttpControlHubClient:
         json: Mapping[str, Any] | None = None,
         params: Mapping[str, Any] | None = None,
     ) -> Any:
+        logger.info(
+            "Sending Control Hub request",
+            extra={
+                "event": "control_hub_request_started",
+                "integration": "control_hub",
+                "http": {"method": method, "path": path},
+            },
+        )
         if self._client is not None:
             response = await self._client.request(method, path, json=json, params=params)
         else:
@@ -128,13 +139,41 @@ class HttpControlHubClient:
                 response = await client.request(method, path, json=json, params=params)
 
         if response.status_code == 422:
+            logger.warning(
+                "Control Hub validation error",
+                extra={
+                    "event": "control_hub_validation_error",
+                    "integration": "control_hub",
+                    "http": {"method": method, "path": path, "status_code": response.status_code},
+                },
+            )
             raise ControlHubIntegrationError(f"Control Hub validation error: {response.text}")
 
         try:
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
+            logger.warning(
+                "Control Hub request failed",
+                extra={
+                    "event": "control_hub_request_failed",
+                    "integration": "control_hub",
+                    "http": {
+                        "method": method,
+                        "path": path,
+                        "status_code": exc.response.status_code,
+                    },
+                },
+            )
             raise ControlHubIntegrationError(
                 f"Control Hub request failed with {exc.response.status_code}: {exc.response.text}"
             ) from exc
 
+        logger.info(
+            "Control Hub request completed",
+            extra={
+                "event": "control_hub_request_completed",
+                "integration": "control_hub",
+                "http": {"method": method, "path": path, "status_code": response.status_code},
+            },
+        )
         return response.json()

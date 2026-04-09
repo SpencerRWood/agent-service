@@ -6,8 +6,11 @@ from typing import Any, Protocol
 import httpx
 from pydantic import BaseModel, Field
 
+from app.core.logging import get_logger
 from app.core.settings import settings
 from app.features.orchestration.schemas import KnowledgeCaptureArtifact
+
+logger = get_logger(__name__)
 
 
 class RagIngestionError(RuntimeError):
@@ -172,6 +175,14 @@ class HttpRagIngestionClient:
         *,
         json: Mapping[str, Any] | None = None,
     ) -> Any:
+        logger.info(
+            "Sending RAG ingestion request",
+            extra={
+                "event": "rag_request_started",
+                "integration": "rag_ingestion",
+                "http": {"method": method, "path": path},
+            },
+        )
         if self._client is not None:
             response = await self._client.request(method, path, json=json)
         else:
@@ -182,15 +193,43 @@ class HttpRagIngestionClient:
                 response = await client.request(method, path, json=json)
 
         if response.status_code == 422:
+            logger.warning(
+                "RAG ingestion validation error",
+                extra={
+                    "event": "rag_validation_error",
+                    "integration": "rag_ingestion",
+                    "http": {"method": method, "path": path, "status_code": response.status_code},
+                },
+            )
             raise RagIngestionError(f"RAG ingestion validation error: {response.text}")
 
         try:
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
+            logger.warning(
+                "RAG ingestion request failed",
+                extra={
+                    "event": "rag_request_failed",
+                    "integration": "rag_ingestion",
+                    "http": {
+                        "method": method,
+                        "path": path,
+                        "status_code": exc.response.status_code,
+                    },
+                },
+            )
             raise RagIngestionError(
                 f"RAG ingestion request failed with {exc.response.status_code}: {exc.response.text}"
             ) from exc
 
+        logger.info(
+            "RAG ingestion request completed",
+            extra={
+                "event": "rag_request_completed",
+                "integration": "rag_ingestion",
+                "http": {"method": method, "path": path, "status_code": response.status_code},
+            },
+        )
         return response.json()
 
     def _project_value(self, artifact: KnowledgeCaptureArtifact) -> str | None:

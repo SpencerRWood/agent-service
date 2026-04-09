@@ -4,6 +4,15 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    labels:
+      logging.environment: "${LOGGING_ENVIRONMENT:-dev}"
+      logging.service: "agent-service"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+        labels: "logging.environment,logging.service"
     ports:
       - "${AGENT_SERVICE_BIND_HOST:-127.0.0.1}:${AGENT_SERVICE_HOST_PORT:-8000}:8000"
     healthcheck:
@@ -12,3 +21,29 @@ services:
       timeout: 5s
       retries: 5
       start_period: 20s
+
+  promtail:
+    image: grafana/promtail:3.2.1
+    restart: unless-stopped
+    labels:
+      logging.environment: "${LOGGING_ENVIRONMENT:-dev}"
+      logging.service: "promtail"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+        labels: "logging.environment,logging.service"
+    command:
+      - "-config.file=/etc/promtail/config.yml"
+      - "-config.expand-env=true"
+    environment:
+      LOKI_PUSH_URL: "${LOKI_PUSH_URL}"
+    volumes:
+      - ./deploy/promtail-config.yml:/etc/promtail/config.yml:ro
+      - promtail-positions:/tmp/promtail
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+
+volumes:
+  promtail-positions:

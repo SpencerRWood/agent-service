@@ -18,6 +18,7 @@ from app.features.orchestration.models import (
     RagStatus,
     WorkerType,
 )
+from app.features.orchestration.platform_bridge import PlatformRecorder
 from app.features.orchestration.router import router, tool_router, webhook_router
 from app.features.orchestration.schemas import PullRequestState, WorkerExecutionResult, WorkerTarget
 from app.features.orchestration.service import OrchestrationService
@@ -229,24 +230,116 @@ class FakeRagClient:
         return receipt
 
 
+class FakePlatformRecorder(PlatformRecorder):
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    async def record_run_created(
+        self,
+        run: OrchestrationRun,
+        *,
+        requested_by: str,
+        assigned_to: str | None,
+    ) -> None:
+        self.calls.append(
+            {
+                "type": "run_created",
+                "run_id": run.id,
+                "requested_by": requested_by,
+                "assigned_to": assigned_to,
+            }
+        )
+
+    async def record_retry_requested(self, run: OrchestrationRun, *, reason: str | None) -> None:
+        self.calls.append({"type": "retry_requested", "run_id": run.id, "reason": reason})
+
+    async def record_approval_resolved(
+        self,
+        run: OrchestrationRun,
+        *,
+        decision: str,
+        reason: str | None,
+        source: str,
+    ) -> None:
+        self.calls.append(
+            {
+                "type": "approval_resolved",
+                "run_id": run.id,
+                "decision": decision,
+                "reason": reason,
+                "source": source,
+            }
+        )
+
+    async def record_dispatch_started(
+        self,
+        run: OrchestrationRun,
+        *,
+        executor_name: str,
+        work_package,
+    ) -> None:
+        self.calls.append(
+            {
+                "type": "dispatch_started",
+                "run_id": run.id,
+                "executor_name": executor_name,
+                "worker_target": work_package.worker_target.value,
+            }
+        )
+
+    async def record_execution_result(self, run: OrchestrationRun) -> None:
+        self.calls.append({"type": "execution_result", "run_id": run.id})
+
+    async def record_execution_failure(self, run: OrchestrationRun, *, detail: str) -> None:
+        self.calls.append({"type": "execution_failure", "run_id": run.id, "detail": detail})
+
+    async def record_artifact_state(self, run: OrchestrationRun, *, artifact, status: str) -> None:
+        self.calls.append(
+            {
+                "type": "artifact_state",
+                "run_id": run.id,
+                "status": status,
+                "artifact_id": artifact.manifest.artifact_id,
+            }
+        )
+
+    async def record_pull_request_event(
+        self,
+        run: OrchestrationRun,
+        *,
+        pr_state: PullRequestState,
+    ) -> None:
+        self.calls.append(
+            {
+                "type": "pull_request_event",
+                "run_id": run.id,
+                "status": pr_state.status.value,
+                "source": pr_state.source,
+            }
+        )
+
+
 @pytest.fixture
 def orchestration_dependencies():
     repository = FakeRepository()
     control_hub = FakeControlHubClient()
     pr_client = FakePullRequestStateClient()
     rag_client = FakeRagClient()
+    platform_recorder = FakePlatformRecorder()
     service = OrchestrationService(
         repository=repository,
         control_hub_client=control_hub,
         provider_router=FakeProviderRouter(),
         rag_client=rag_client,
         pr_state_client=pr_client,
+        platform_recorder=platform_recorder,
     )
     return {
         "repository": repository,
         "control_hub": control_hub,
         "pr_client": pr_client,
         "rag_client": rag_client,
+        "platform_recorder": platform_recorder,
         "service": service,
     }
 

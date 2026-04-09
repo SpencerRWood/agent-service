@@ -1,0 +1,5 @@
+positions:
+  /workspace/.devcontainer/promtail.log: "72134"
+  /workspace/.devcontainer/pytest.log: "1"
+  /workspace/.devcontainer/start-dev.log: "8276"
+  /workspace/.devcontainer/uvicorn.log: "0"

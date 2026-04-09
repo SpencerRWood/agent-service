@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from fastapi import HTTPException, status
 
+from app.core.logging import get_logger
 from app.core.settings import settings
 from app.features.orchestration.models import (
     ExecutionStatus,
@@ -17,6 +18,7 @@ from app.features.orchestration.models import (
     RagStatus,
     WorkerType,
 )
+from app.features.orchestration.platform_bridge import NullPlatformRecorder, PlatformRecorder
 from app.features.orchestration.schemas import (
     ActionType,
     ApprovedWorkPackage,
@@ -53,6 +55,8 @@ from app.integrations.rag.client import (
     RagIngestionError,
     RagIngestionReceipt,
 )
+
+logger = get_logger(__name__)
 
 
 class PullRequestStateClient(Protocol):
@@ -375,6 +379,7 @@ class OrchestrationService:
         pr_state_client: PullRequestStateClient | None = None,
         planner_agent: PlannerRiskAgent | None = None,
         knowledge_agent: KnowledgeCaptureAgent | None = None,
+        platform_recorder: PlatformRecorder | None = None,
     ) -> None:
         self._repository = repository
         self._control_hub = control_hub_client
@@ -383,12 +388,31 @@ class OrchestrationService:
         self._pr_state_client = pr_state_client or NullPullRequestStateClient()
         self._planner_agent = planner_agent or PlannerRiskAgent()
         self._knowledge_agent = knowledge_agent or KnowledgeCaptureAgent()
+        self._platform_recorder = platform_recorder or NullPlatformRecorder()
 
     async def create_run(self, request: CreateRunRequest) -> RunRead:
+        logger.info(
+            "Creating orchestration run",
+            extra={
+                "event": "orchestration_run_create_started",
+                "repo": request.repo or settings.orchestration_default_repo,
+                "requested_by": request.requested_by or self._default_requested_by(),
+                "worker_target": (
+                    request.worker_target.value if request.worker_target is not None else "auto"
+                ),
+            },
+        )
         agent_result = self._planner_agent.build_plan(request)
         try:
             provider_name = self._provider_router.choose_provider_name(agent_result.proposal)
         except ProviderRoutingError as exc:
+            logger.warning(
+                "Failed to select orchestration provider",
+                extra={
+                    "event": "orchestration_provider_selection_failed",
+                    "repo": agent_result.proposal.repo,
+                },
+            )
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=f"Unable to route orchestration provider: {exc}",
@@ -412,6 +436,14 @@ class OrchestrationService:
                 )
             )
         except ControlHubIntegrationError as exc:
+            logger.warning(
+                "Failed to create Control Hub approval",
+                extra={
+                    "event": "orchestration_approval_create_failed",
+                    "repo": agent_result.proposal.repo,
+                    "provider": provider_name.value,
+                },
+            )
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail=f"Failed to create Control Hub approval: {exc}",
@@ -433,6 +465,23 @@ class OrchestrationService:
             proposal_json=agent_result.proposal.model_dump(mode="json"),
         )
         created = await self._repository.create(run)
+        await self._platform_recorder.record_run_created(
+            created,
+            requested_by=request.requested_by or self._default_requested_by(),
+            assigned_to=request.assigned_to or self._default_assigned_to(),
+        )
+        created = await self._repository.update(created)
+        logger.info(
+            "Orchestration run created",
+            extra={
+                "event": "orchestration_run_created",
+                "run_id": created.id,
+                "repo": created.repo,
+                "provider": created.provider.value,
+                "execution_status": created.execution_status.value,
+                "approval_id": created.control_hub_approval_id,
+            },
+        )
         return RunRead.model_validate(created)
 
     async def create_run_from_chat_tool(
@@ -529,6 +578,15 @@ class OrchestrationService:
                 )
             )
         except ControlHubIntegrationError as exc:
+            logger.warning(
+                "Failed to create retry approval",
+                extra={
+                    "event": "orchestration_retry_approval_failed",
+                    "run_id": run.id,
+                    "repo": run.repo,
+                    "provider": run.provider.value,
+                },
+            )
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail=f"Failed to create Control Hub approval: {exc}",
@@ -546,16 +604,48 @@ class OrchestrationService:
         run.execution_result_json = None
         run.knowledge_artifact_json = None
         updated = await self._repository.update(run)
+        await self._platform_recorder.record_retry_requested(updated, reason=reason)
+        updated = await self._repository.update(updated)
+        logger.info(
+            "Orchestration run reset for retry",
+            extra={
+                "event": "orchestration_run_retried",
+                "run_id": updated.id,
+                "repo": updated.repo,
+                "provider": updated.provider.value,
+                "execution_status": updated.execution_status.value,
+                "approval_id": updated.control_hub_approval_id,
+            },
+        )
         return RunRead.model_validate(updated)
 
     async def reconcile_run(self, run_id: str) -> ReconcileResponse:
         run = await self._require_run(run_id)
         changed = False
+        logger.info(
+            "Reconciling orchestration run",
+            extra={
+                "event": "orchestration_run_reconcile_started",
+                "run_id": run.id,
+                "repo": run.repo,
+                "execution_status": run.execution_status.value,
+                "pr_status": run.pr_status.value,
+                "rag_status": run.rag_status.value,
+            },
+        )
 
         if run.control_hub_approval_id is not None:
             try:
                 approval = await self._control_hub.get_approval(run.control_hub_approval_id)
             except ControlHubIntegrationError as exc:
+                logger.warning(
+                    "Failed to fetch Control Hub approval during reconciliation",
+                    extra={
+                        "event": "orchestration_reconcile_approval_fetch_failed",
+                        "run_id": run.id,
+                        "approval_id": run.control_hub_approval_id,
+                    },
+                )
                 raise HTTPException(
                     status_code=status.HTTP_502_BAD_GATEWAY,
                     detail=f"Failed to fetch Control Hub approval: {exc}",
@@ -569,36 +659,73 @@ class OrchestrationService:
                 run.rag_status = (
                     RagStatus.STALE if run.knowledge_artifact_json else RagStatus.NOT_STARTED
                 )
+                await self._platform_recorder.record_approval_resolved(
+                    run,
+                    decision="rejected",
+                    reason=run.failure_details,
+                    source="control_hub",
+                )
                 changed = True
             elif (
                 approval.status == ApprovalStatus.APPROVED
                 and run.execution_status == ExecutionStatus.AWAITING_APPROVAL
             ):
+                await self._platform_recorder.record_approval_resolved(
+                    run,
+                    decision="approved",
+                    reason=approval.decision_reason,
+                    source="control_hub",
+                )
                 await self._dispatch_target(run)
                 changed = True
 
         pr_state = await self._pr_state_client.get_state(run)
         if pr_state is not None:
             changed = await self._apply_pull_request_state(run, pr_state) or changed
+            await self._platform_recorder.record_pull_request_event(run, pr_state=pr_state)
 
         if changed:
             run = await self._repository.update(run)
 
+        logger.info(
+            "Orchestration reconciliation completed",
+            extra={
+                "event": "orchestration_run_reconcile_completed",
+                "run_id": run.id,
+                "repo": run.repo,
+                "changed": changed,
+                "execution_status": run.execution_status.value,
+                "pr_status": run.pr_status.value,
+                "rag_status": run.rag_status.value,
+            },
+        )
         return ReconcileResponse(run=RunRead.model_validate(run), changed=changed)
 
     async def apply_pull_request_event(
         self, run_id: str, event: PullRequestEventRequest
     ) -> RunRead:
         run = await self._require_run(run_id)
+        pr_state = PullRequestState(
+            status=event.status,
+            approved_by=event.approved_by,
+            merged_at=event.merged_at,
+            source=event.source,
+        )
+        logger.info(
+            "Applying pull request event to run",
+            extra={
+                "event": "orchestration_pr_event_received",
+                "run_id": run.id,
+                "repo": run.repo,
+                "pr_status": event.status.value,
+                "source": event.source,
+            },
+        )
         changed = await self._apply_pull_request_state(
             run,
-            PullRequestState(
-                status=event.status,
-                approved_by=event.approved_by,
-                merged_at=event.merged_at,
-                source=event.source,
-            ),
+            pr_state,
         )
+        await self._platform_recorder.record_pull_request_event(run, pr_state=pr_state)
         if changed:
             run = await self._repository.update(run)
         return RunRead.model_validate(run)
@@ -612,11 +739,40 @@ class OrchestrationService:
     ) -> RunRead | None:
         run = await self._repository.get_by_repo_and_pr_number(repo=repo, pr_number=pr_number)
         if run is None:
+            logger.info(
+                "Pull request event did not match an orchestration run",
+                extra={
+                    "event": "orchestration_pr_event_unmatched",
+                    "repo": repo,
+                    "pr_number": pr_number,
+                    "pr_status": event.status.value,
+                },
+            )
             return None
 
+        logger.info(
+            "Applying pull request event by number",
+            extra={
+                "event": "orchestration_pr_event_matched",
+                "run_id": run.id,
+                "repo": repo,
+                "pr_number": pr_number,
+                "pr_status": event.status.value,
+                "source": event.source,
+            },
+        )
         changed = await self._apply_pull_request_state(
             run,
             PullRequestState(
+                status=event.status,
+                approved_by=event.approved_by,
+                merged_at=event.merged_at,
+                source=event.source,
+            ),
+        )
+        await self._platform_recorder.record_pull_request_event(
+            run,
+            pr_state=PullRequestState(
                 status=event.status,
                 approved_by=event.approved_by,
                 merged_at=event.merged_at,
@@ -630,6 +786,16 @@ class OrchestrationService:
     async def _dispatch_target(self, run: OrchestrationRun) -> None:
         run.execution_status = ExecutionStatus.APPROVED
         proposal = ExecutionProposal.model_validate(run.proposal_json)
+        logger.info(
+            "Dispatching orchestration run",
+            extra={
+                "event": "orchestration_dispatch_started",
+                "run_id": run.id,
+                "repo": run.repo,
+                "provider": run.provider.value,
+                "worker_target": proposal.worker_target.value,
+            },
+        )
         if proposal.worker_target == WorkerTarget.AGENT_C:
             await self._dispatch_agent_c(run, proposal)
             return
@@ -645,6 +811,21 @@ class OrchestrationService:
         work_package = self._build_work_package(run, proposal, primary_provider_name)
         run.work_package_json = work_package.model_dump(mode="json")
         run.execution_status = ExecutionStatus.EXECUTING
+        await self._platform_recorder.record_dispatch_started(
+            run,
+            executor_name=primary_provider_name.value,
+            work_package=work_package,
+        )
+        logger.info(
+            "Executing Worker B run",
+            extra={
+                "event": "orchestration_worker_b_execution_started",
+                "run_id": run.id,
+                "repo": run.repo,
+                "provider": primary_provider_name.value,
+                "worker_target": proposal.worker_target.value,
+            },
+        )
 
         try:
             provider = self._provider_router.get_provider(primary_provider_name)
@@ -656,10 +837,33 @@ class OrchestrationService:
             if fallback_provider_name is None:
                 run.execution_status = ExecutionStatus.FAILED
                 run.failure_details = f"Worker execution failed: {primary_exc}"
+                await self._platform_recorder.record_execution_failure(
+                    run,
+                    detail=run.failure_details,
+                )
+                logger.warning(
+                    "Worker B execution failed without fallback",
+                    extra={
+                        "event": "orchestration_worker_b_execution_failed",
+                        "run_id": run.id,
+                        "repo": run.repo,
+                        "provider": primary_provider_name.value,
+                    },
+                )
                 return
 
             fallback_work_package = self._build_work_package(run, proposal, fallback_provider_name)
             run.work_package_json = fallback_work_package.model_dump(mode="json")
+            logger.warning(
+                "Worker B execution falling back to alternate provider",
+                extra={
+                    "event": "orchestration_worker_b_fallback_started",
+                    "run_id": run.id,
+                    "repo": run.repo,
+                    "provider": primary_provider_name.value,
+                    "fallback_provider": fallback_provider_name.value,
+                },
+            )
             try:
                 fallback_provider = self._provider_router.get_provider(fallback_provider_name)
                 result = await fallback_provider.execute(fallback_work_package)
@@ -669,6 +873,20 @@ class OrchestrationService:
                     "Worker execution failed. "
                     f"Primary provider '{primary_provider_name.value}': {primary_exc}. "
                     f"Fallback provider '{fallback_provider_name.value}': {fallback_exc}."
+                )
+                await self._platform_recorder.record_execution_failure(
+                    run,
+                    detail=run.failure_details,
+                )
+                logger.warning(
+                    "Worker B execution failed after fallback",
+                    extra={
+                        "event": "orchestration_worker_b_fallback_failed",
+                        "run_id": run.id,
+                        "repo": run.repo,
+                        "provider": primary_provider_name.value,
+                        "fallback_provider": fallback_provider_name.value,
+                    },
                 )
                 return
 
@@ -686,10 +904,24 @@ class OrchestrationService:
         except Exception as exc:  # pragma: no cover - defensive guard
             run.execution_status = ExecutionStatus.FAILED
             run.failure_details = f"Worker execution failed: {exc}"
+            await self._platform_recorder.record_execution_failure(
+                run,
+                detail=run.failure_details,
+            )
+            logger.exception(
+                "Unexpected Worker B execution failure",
+                extra={
+                    "event": "orchestration_worker_b_execution_exception",
+                    "run_id": run.id,
+                    "repo": run.repo,
+                    "provider": primary_provider_name.value,
+                },
+            )
             return
 
         run.failure_details = None
         self._apply_worker_result(run, result)
+        await self._platform_recorder.record_execution_result(run)
 
     async def _dispatch_agent_c(
         self,
@@ -699,6 +931,21 @@ class OrchestrationService:
         work_package = self._build_work_package(run, proposal, run.provider)
         run.work_package_json = work_package.model_dump(mode="json")
         run.execution_status = ExecutionStatus.EXECUTING
+        await self._platform_recorder.record_dispatch_started(
+            run,
+            executor_name=proposal.worker_target.value,
+            work_package=work_package,
+        )
+        logger.info(
+            "Executing Agent C run",
+            extra={
+                "event": "orchestration_agent_c_execution_started",
+                "run_id": run.id,
+                "repo": run.repo,
+                "provider": run.provider.value,
+                "worker_target": proposal.worker_target.value,
+            },
+        )
 
         artifact = self._knowledge_agent.capture(run)
         run.execution_result_json = {
@@ -719,6 +966,25 @@ class OrchestrationService:
             run.rag_status = RagStatus.FAILED
             run.execution_status = ExecutionStatus.FAILED
             run.failure_details = f"Agent C ingestion failed: {exc}"
+            await self._platform_recorder.record_execution_failure(
+                run,
+                detail=run.failure_details,
+            )
+            failed_artifact = KnowledgeCaptureArtifact.model_validate(run.knowledge_artifact_json)
+            await self._platform_recorder.record_artifact_state(
+                run,
+                artifact=failed_artifact,
+                status="failed",
+            )
+            logger.warning(
+                "Agent C provisional ingestion failed",
+                extra={
+                    "event": "orchestration_agent_c_ingestion_failed",
+                    "run_id": run.id,
+                    "repo": run.repo,
+                    "artifact_id": artifact.manifest.artifact_id,
+                },
+            )
             return
 
         artifact = self._record_rag_receipt(artifact, receipt)
@@ -726,6 +992,22 @@ class OrchestrationService:
         run.rag_status = RagStatus.PROVISIONAL
         run.execution_status = ExecutionStatus.DOCS_STAGED
         run.failure_details = None
+        await self._platform_recorder.record_execution_result(run)
+        await self._platform_recorder.record_artifact_state(
+            run,
+            artifact=artifact,
+            status="provisional",
+        )
+        logger.info(
+            "Agent C provisional artifact staged",
+            extra={
+                "event": "orchestration_agent_c_ingestion_completed",
+                "run_id": run.id,
+                "repo": run.repo,
+                "artifact_id": artifact.manifest.artifact_id,
+                "rag_status": run.rag_status.value,
+            },
+        )
 
     def _apply_worker_result(self, run: OrchestrationRun, result: WorkerExecutionResult) -> None:
         run.branch = result.branch_name
@@ -734,6 +1016,17 @@ class OrchestrationService:
         run.pr_status = PullRequestStatus.OPEN
         run.execution_status = ExecutionStatus.PR_OPEN
         run.execution_result_json = result.model_dump(mode="json")
+        logger.info(
+            "Worker execution opened pull request",
+            extra={
+                "event": "orchestration_worker_result_applied",
+                "run_id": run.id,
+                "repo": run.repo,
+                "provider": run.provider.value,
+                "pr_number": run.pr_number,
+                "execution_status": run.execution_status.value,
+            },
+        )
 
     def _build_work_package(
         self,
@@ -764,6 +1057,9 @@ class OrchestrationService:
         self, run: OrchestrationRun, pr_state: PullRequestState
     ) -> bool:
         changed = False
+        previous_pr_status = run.pr_status
+        previous_execution_status = run.execution_status
+        previous_rag_status = run.rag_status
         if pr_state.status != run.pr_status:
             run.pr_status = pr_state.status
             changed = True
@@ -795,6 +1091,11 @@ class OrchestrationService:
                 run.rag_status = RagStatus.PROVISIONAL
                 run.execution_status = ExecutionStatus.DOCS_STAGED
                 run.failure_details = None
+                await self._platform_recorder.record_artifact_state(
+                    run,
+                    artifact=artifact,
+                    status="provisional",
+                )
                 changed = True
         elif pr_state.status == PullRequestStatus.MERGED:
             if run.execution_status not in {ExecutionStatus.MERGED, ExecutionStatus.COMPLETED}:
@@ -821,6 +1122,11 @@ class OrchestrationService:
                     run.rag_status = RagStatus.PROMOTED
                     run.execution_status = ExecutionStatus.COMPLETED
                     run.failure_details = None
+                    await self._platform_recorder.record_artifact_state(
+                        run,
+                        artifact=promoted_artifact,
+                        status="promoted",
+                    )
                 changed = True
         elif pr_state.status in {
             PullRequestStatus.CHANGES_REQUESTED,
@@ -853,6 +1159,11 @@ class OrchestrationService:
                     run.rag_status = RagStatus.FAILED
                     run.failure_details = f"RAG stale-mark failed: {exc}"
                 run.knowledge_artifact_json = stale_artifact.model_dump(mode="json")
+                await self._platform_recorder.record_artifact_state(
+                    run,
+                    artifact=stale_artifact,
+                    status="stale" if run.rag_status == RagStatus.STALE else "failed",
+                )
             if pr_state.status != PullRequestStatus.CLOSED:
                 run.execution_status = ExecutionStatus.PR_OPEN
             else:
@@ -860,11 +1171,41 @@ class OrchestrationService:
                 run.failure_details = "Pull request closed before merge."
             changed = True
 
+        if changed:
+            logger.info(
+                "Pull request state applied to orchestration run",
+                extra={
+                    "event": "orchestration_pr_state_applied",
+                    "run_id": run.id,
+                    "repo": run.repo,
+                    "source": pr_state.source,
+                    "pr_status": {
+                        "from": previous_pr_status.value,
+                        "to": run.pr_status.value,
+                    },
+                    "execution_status": {
+                        "from": previous_execution_status.value,
+                        "to": run.execution_status.value,
+                    },
+                    "rag_status": {
+                        "from": previous_rag_status.value,
+                        "to": run.rag_status.value,
+                    },
+                },
+            )
+
         return changed
 
     async def _require_run(self, run_id: str) -> OrchestrationRun:
         run = await self._repository.get(run_id)
         if run is None:
+            logger.info(
+                "Requested orchestration run was not found",
+                extra={
+                    "event": "orchestration_run_not_found",
+                    "run_id": run_id,
+                },
+            )
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found.")
         return run
 
