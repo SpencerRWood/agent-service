@@ -8,6 +8,7 @@ def build_target(
     is_default: bool = False,
     target_kind: str = "generic",
     labels: list[str] | None = None,
+    supported_tools: list[str] | None = None,
 ) -> ExecutionTarget:
     return ExecutionTarget(
         id=target_id,
@@ -16,7 +17,7 @@ def build_target(
         enabled=True,
         is_default=is_default,
         labels_json=labels or [],
-        supported_tools_json=["agent.execute_coding_task"],
+        supported_tools_json=supported_tools or ["agent.execute_coding_task"],
         metadata_json={"target_kind": target_kind},
     )
 
@@ -71,3 +72,24 @@ def test_select_execution_target_prefers_gpu_route_profile():
 
     assert selected is not None
     assert selected.id == "gpu-future"
+
+
+def test_select_execution_target_allows_wildcard_supported_tools():
+    targets = [
+        build_target(
+            "mbp-primary",
+            is_default=True,
+            target_kind="macbook",
+            supported_tools=["*"],
+        ),
+    ]
+
+    selected = select_execution_target(
+        candidates=targets,
+        explicit_target_id=None,
+        configured_default_target_id="mbp-primary",
+        routing_context={"prompt": "Promote a staged knowledge artifact"},
+    )
+
+    assert selected is not None
+    assert selected.id == "mbp-primary"

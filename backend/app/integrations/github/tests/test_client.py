@@ -71,6 +71,35 @@ def test_github_pr_state_client_returns_approved_state():
     ]
 
 
+def test_github_pr_state_client_reads_repo_and_pr_number_directly():
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        if request.url.path.endswith("/pulls/7"):
+            return httpx.Response(200, json={"number": 7, "state": "open", "merged": False})
+        if request.url.path.endswith("/pulls/7/reviews"):
+            return httpx.Response(200, json=[])
+        raise AssertionError(f"Unexpected path: {request.url.path}")
+
+    transport = httpx.MockTransport(handler)
+    http_client = httpx.AsyncClient(transport=transport, base_url="https://api.github.test")
+    client = GitHubPullRequestStateClient(
+        owner="example",
+        token="token",
+        base_url="https://api.github.test",
+        client=http_client,
+    )
+
+    state = asyncio.run(client.get_pull_request_state(repo="agent-service", pr_number=7))
+
+    assert state == PullRequestState(status="open", approved_by=[], source="github_api")
+    assert calls == [
+        "/repos/example/agent-service/pulls/7",
+        "/repos/example/agent-service/pulls/7/reviews",
+    ]
+
+
 def test_github_pr_state_client_returns_merged_state():
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path.endswith("/pulls/42")

@@ -35,7 +35,7 @@ class ExecutionTargetRepository:
         return [
             target
             for target in result.scalars().all()
-            if tool_name in (target.supported_tools_json or [])
+            if _supports_tool(target.supported_tools_json or [], tool_name)
         ]
 
     async def get_target(self, target_id: str) -> ExecutionTarget | None:
@@ -57,7 +57,9 @@ class ExecutionTargetRepository:
         target = result.scalar_one_or_none()
         if target is None:
             return None
-        if tool_name is not None and tool_name not in (target.supported_tools_json or []):
+        if tool_name is not None and not _supports_tool(
+            target.supported_tools_json or [], tool_name
+        ):
             return None
         return target
 
@@ -98,7 +100,7 @@ class ExecutionTargetRepository:
         )
         result = await self._session.execute(stmt)
         for job in result.scalars().all():
-            if supported_tools and job.tool_name not in supported_tools:
+            if supported_tools and not _supports_tool(supported_tools, job.tool_name):
                 continue
             job.status = "claimed"
             job.claimed_by = worker_id
@@ -143,3 +145,8 @@ class ExecutionTargetRepository:
             if except_target_id is not None and target.id == except_target_id:
                 continue
             target.is_default = False
+
+
+def _supports_tool(supported_tools: list[str], tool_name: str) -> bool:
+    normalized = {str(tool).strip() for tool in supported_tools}
+    return "*" in normalized or tool_name in normalized

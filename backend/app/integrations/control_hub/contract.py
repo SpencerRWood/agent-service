@@ -51,6 +51,8 @@ class ControlHubApprovalItemCreate(ControlHubModel):
 
 
 class ControlHubApprovalItemRead(ControlHubModel):
+    model_config = ConfigDict(extra="ignore")
+
     id: int
     title: str
     action_type: str
