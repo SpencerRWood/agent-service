@@ -1,6 +1,6 @@
 # Agent Service
 
-FastAPI-based agent control plane with generic interaction APIs, execution target routing, remote worker support, and an admin frontend for execution-target operations.
+FastAPI-based agent control plane with generic interaction APIs, execution target routing, remote worker support, and a built-in admin frontend served from the same container.
 
 ## Local development
 
@@ -39,7 +39,6 @@ Required app settings:
 
 Deployment settings:
 - `AGENT_SERVICE_IMAGE` for the deployed image. Default: `ghcr.io/spencerrwood/agent-service:latest`
-- `AGENT_SERVICE_ADMIN_IMAGE` for the web/admin image that serves the frontend and proxies `/api/*` internally. Default: `ghcr.io/spencerrwood/agent-service-admin:latest`
 - `AGENT_SERVICE_BIND_HOST` for the host bind address in Docker Compose. Default: `127.0.0.1`
 - `AGENT_SERVICE_HOST_PORT` for the single published Docker Compose port. Default: `8080`
 - `CONTROL_HUB_CONTRACT_PATH` for the authoritative checked-in Control Hub OpenAPI contract
@@ -73,24 +72,20 @@ Repeated container starts are safe: provisioning is idempotent and migrations ru
 
 ```sh
 docker build -t agent-service:local .
-docker build -f frontend/Dockerfile -t agent-service-admin:local .
-AGENT_SERVICE_IMAGE=agent-service:local AGENT_SERVICE_ADMIN_IMAGE=agent-service-admin:local docker compose up -d
+AGENT_SERVICE_IMAGE=agent-service:local docker compose up -d
 ```
 
 4. Or pull a published image and start it:
 
 ```sh
-AGENT_SERVICE_IMAGE=ghcr.io/<owner>/agent-service:latest \
-AGENT_SERVICE_ADMIN_IMAGE=ghcr.io/<owner>/agent-service-admin:latest \
-docker compose up -d
+AGENT_SERVICE_IMAGE=ghcr.io/<owner>/agent-service:latest docker compose up -d
 ```
 
 The Compose file now includes:
-- `app` for the FastAPI control plane on the internal Docker network
-- `agents` as the single public web entrypoint on port `8080`
+- `agents` as the single public container serving the UI at `/` and the API at `/api/*`
 - `promtail` for optional log shipping
 
-Route your public reverse proxy to the single published `agents` port. The frontend serves the UI and proxies `/api/*` back to the FastAPI backend internally, so you only need one upstream port for `agents.woodhost.cloud`.
+Route your public reverse proxy to the single published `agents` port. The container serves the UI at `/` and the FastAPI API under `/api/*`, so you only need one upstream port for `agents.woodhost.cloud`.
 
 ## Verification
 
