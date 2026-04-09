@@ -124,6 +124,26 @@ def configure_logging(*, level: str, environment: str, app_name: str) -> None:
                     "level": level,
                     "propagate": False,
                 },
+                "sqlalchemy": {
+                    "handlers": ["default"],
+                    "level": "WARNING",
+                    "propagate": False,
+                },
+                "sqlalchemy.engine": {
+                    "handlers": ["default"],
+                    "level": "WARNING",
+                    "propagate": False,
+                },
+                "sqlalchemy.engine.Engine": {
+                    "handlers": ["default"],
+                    "level": "WARNING",
+                    "propagate": False,
+                },
+                "sqlalchemy.pool": {
+                    "handlers": ["default"],
+                    "level": "WARNING",
+                    "propagate": False,
+                },
             },
         }
     )
