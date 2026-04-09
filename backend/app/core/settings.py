@@ -33,14 +33,6 @@ class Settings(BaseSettings):
         default="https://control.woodhost.cloud/api",
         validation_alias="CONTROL_HUB_BASE_URL",
     )
-    control_hub_openapi_url: str = Field(
-        default="https://control.woodhost.cloud/api/openapi.json",
-        validation_alias="CONTROL_HUB_OPENAPI_URL",
-    )
-    control_hub_contract_path: str = Field(
-        default="../control-hub/contracts/openapi/control-hub.openapi.json",
-        validation_alias="CONTROL_HUB_CONTRACT_PATH",
-    )
     control_hub_timeout_seconds: float = Field(
         default=15.0,
         validation_alias="CONTROL_HUB_TIMEOUT_SECONDS",
@@ -56,10 +48,6 @@ class Settings(BaseSettings):
     rag_ingestion_enabled: bool = Field(
         default=False,
         validation_alias="RAG_INGESTION_ENABLED",
-    )
-    control_hub_enable_remote_schema_check: bool = Field(
-        default=False,
-        validation_alias="CONTROL_HUB_ENABLE_REMOTE_SCHEMA_CHECK",
     )
     orchestration_default_provider: str = Field(
         default="codex",
@@ -159,14 +147,6 @@ class Settings(BaseSettings):
 
     @computed_field
     @property
-    def resolved_control_hub_contract_path(self) -> Path:
-        contract_path = Path(self.control_hub_contract_path)
-        if contract_path.is_absolute():
-            return contract_path
-        return (Path(__file__).resolve().parents[3] / contract_path).resolve()
-
-    @computed_field
-    @property
     def agent_registry(self) -> AgentRegistry:
         return load_agent_registry(self.resolved_agent_config_path)
 
@@ -216,7 +196,6 @@ class Settings(BaseSettings):
 
     @field_validator(
         "debug",
-        "control_hub_enable_remote_schema_check",
         "rag_ingestion_enabled",
         mode="before",
     )
