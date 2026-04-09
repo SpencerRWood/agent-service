@@ -9,10 +9,6 @@ from fastapi.staticfiles import StaticFiles
 from app.core.logging import configure_logging, get_logger, log_request_middleware
 from app.core.router_loader import register_feature_routers
 from app.core.settings import settings
-from app.integrations.control_hub.contract import (
-    assert_local_contract_compatible,
-    validate_remote_openapi_if_enabled,
-)
 from app.projections.interaction.app import create_interaction_app
 
 configure_logging(
@@ -35,8 +31,6 @@ async def lifespan(_: FastAPI):
             "version": settings.app_version,
         },
     )
-    assert_local_contract_compatible()
-    await validate_remote_openapi_if_enabled()
     yield
     logger.info(
         "Application shutdown",
