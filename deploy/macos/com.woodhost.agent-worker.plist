@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>com.woodhost.agent-worker</string>
+
+    <key>ProgramArguments</key>
+    <array>
+      <string>/usr/bin/env</string>
+      <string>python3</string>
+      <string>__REPO_ROOT__/scripts/run_worker_agent.py</string>
+      <string>--server-base-url</string>
+      <string>https://agents.woodhost.cloud</string>
+      <string>--target-id</string>
+      <string>mbp-primary</string>
+      <string>--worker-id</string>
+      <string>mbp-primary-worker</string>
+      <string>--worker-token</string>
+      <string>__WORKER_TOKEN__</string>
+      <string>--codex-command</string>
+      <string>codex</string>
+      <string>--copilot-command</string>
+      <string>copilot</string>
+      <string>--stdout-log-path</string>
+      <string>__REPO_ROOT__/.worker/agent-worker.out.log</string>
+      <string>--stderr-log-path</string>
+      <string>__REPO_ROOT__/.worker/agent-worker.err.log</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__REPO_ROOT__</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>__REPO_ROOT__/.worker/agent-worker.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>__REPO_ROOT__/.worker/agent-worker.err.log</string>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+  </dict>
+</plist>

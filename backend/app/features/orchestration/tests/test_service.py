@@ -18,6 +18,7 @@ from app.features.orchestration.tests.conftest import FakeProviderRouter, build_
 def test_rejected_approval_ends_run(orchestration_dependencies):
     service = orchestration_dependencies["service"]
     control_hub = orchestration_dependencies["control_hub"]
+    platform_recorder = orchestration_dependencies["platform_recorder"]
 
     run = asyncio.run(
         service.create_run(
@@ -30,6 +31,10 @@ def test_rejected_approval_ends_run(orchestration_dependencies):
 
     assert reconciled.run.execution_status == ExecutionStatus.REJECTED
     assert reconciled.run.failure_details == "Too risky"
+    assert any(
+        call["type"] == "approval_resolved" and call["decision"] == "rejected"
+        for call in platform_recorder.calls
+    )
 
 
 def test_pr_approval_triggers_docs_stage(orchestration_dependencies):
@@ -202,6 +207,7 @@ def test_create_run_resolves_auto_target_to_agent_c_for_artifact_prompts(
 def test_reconcile_builds_project_aware_branch_strategy(orchestration_dependencies):
     service = orchestration_dependencies["service"]
     control_hub = orchestration_dependencies["control_hub"]
+    platform_recorder = orchestration_dependencies["platform_recorder"]
 
     run = asyncio.run(
         service.create_run(
@@ -220,6 +226,24 @@ def test_reconcile_builds_project_aware_branch_strategy(orchestration_dependenci
     assert reconciled.run.work_package_json["worker_target"] == WorkerTarget.WORKER_B.value
     assert reconciled.run.branch.startswith("orchestration/agent-service/control-hub/worker-b/")
     assert reconciled.run.knowledge_artifact_json is None
+    assert any(
+        call["type"] == "dispatch_started" and call["executor_name"] == "codex"
+        for call in platform_recorder.calls
+    )
+
+
+def test_create_run_records_platform_run_creation(orchestration_dependencies):
+    service = orchestration_dependencies["service"]
+    platform_recorder = orchestration_dependencies["platform_recorder"]
+
+    run = asyncio.run(
+        service.create_run(CreateRunRequest(user_prompt="Add endpoint", repo="agent-service"))
+    )
+
+    assert any(
+        call["type"] == "run_created" and call["run_id"] == run.id
+        for call in platform_recorder.calls
+    )
 
 
 def test_reconcile_falls_back_to_secondary_provider(orchestration_dependencies):

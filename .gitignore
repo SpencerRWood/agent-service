@@ -205,3 +205,11 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Frontend build and local tool state
+frontend/node_modules/
+frontend/dist/
+frontend/*.tsbuildinfo
+
+# Worker runtime state
+.worker/

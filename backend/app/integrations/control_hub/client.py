@@ -5,11 +5,14 @@ from typing import Any, Protocol
 
 import httpx
 
+from app.core.logging import get_logger
 from app.core.settings import settings
 from app.integrations.control_hub.contract import (
     ApprovalStatus,
+    ControlHubApprovalItemApprove,
     ControlHubApprovalItemCreate,
     ControlHubApprovalItemRead,
+    ControlHubApprovalItemReject,
     ControlHubContractError,
 )
 
@@ -22,6 +25,8 @@ __all__ = [
     "HttpControlHubClient",
 ]
 
+logger = get_logger(__name__)
+
 
 class ControlHubIntegrationError(RuntimeError):
     """Raised when Control Hub cannot process a request or returns invalid data."""
@@ -33,6 +38,22 @@ class ControlHubClient(Protocol):
     ) -> ControlHubApprovalItemRead: ...
 
     async def get_approval(self, item_id: int) -> ControlHubApprovalItemRead: ...
+
+    async def approve_approval(
+        self,
+        item_id: int,
+        *,
+        decided_by: str,
+        decision_reason: str | None = None,
+    ) -> ControlHubApprovalItemRead: ...
+
+    async def reject_approval(
+        self,
+        item_id: int,
+        *,
+        decided_by: str,
+        decision_reason: str,
+    ) -> ControlHubApprovalItemRead: ...
 
     async def list_approvals(
         self,
@@ -85,6 +106,54 @@ class HttpControlHubClient:
                 f"Control Hub contract validation failed: {exc}"
             ) from exc
 
+    async def approve_approval(
+        self,
+        item_id: int,
+        *,
+        decided_by: str,
+        decision_reason: str | None = None,
+    ) -> ControlHubApprovalItemRead:
+        body = ControlHubApprovalItemApprove(
+            decided_by=decided_by,
+            decision_reason=decision_reason,
+        )
+        try:
+            return ControlHubApprovalItemRead.model_validate(
+                await self._request(
+                    "POST",
+                    f"/approvals/{item_id}/approve",
+                    json=body.model_dump(mode="json"),
+                )
+            )
+        except ControlHubContractError as exc:
+            raise ControlHubIntegrationError(
+                f"Control Hub contract validation failed: {exc}"
+            ) from exc
+
+    async def reject_approval(
+        self,
+        item_id: int,
+        *,
+        decided_by: str,
+        decision_reason: str,
+    ) -> ControlHubApprovalItemRead:
+        body = ControlHubApprovalItemReject(
+            decided_by=decided_by,
+            decision_reason=decision_reason,
+        )
+        try:
+            return ControlHubApprovalItemRead.model_validate(
+                await self._request(
+                    "POST",
+                    f"/approvals/{item_id}/reject",
+                    json=body.model_dump(mode="json"),
+                )
+            )
+        except ControlHubContractError as exc:
+            raise ControlHubIntegrationError(
+                f"Control Hub contract validation failed: {exc}"
+            ) from exc
+
     async def list_approvals(
         self,
         *,
@@ -118,6 +187,14 @@ class HttpControlHubClient:
         json: Mapping[str, Any] | None = None,
         params: Mapping[str, Any] | None = None,
     ) -> Any:
+        logger.info(
+            "Sending Control Hub request",
+            extra={
+                "event": "control_hub_request_started",
+                "integration": "control_hub",
+                "http": {"method": method, "path": path},
+            },
+        )
         if self._client is not None:
             response = await self._client.request(method, path, json=json, params=params)
         else:
@@ -128,13 +205,41 @@ class HttpControlHubClient:
                 response = await client.request(method, path, json=json, params=params)
 
         if response.status_code == 422:
+            logger.warning(
+                "Control Hub validation error",
+                extra={
+                    "event": "control_hub_validation_error",
+                    "integration": "control_hub",
+                    "http": {"method": method, "path": path, "status_code": response.status_code},
+                },
+            )
             raise ControlHubIntegrationError(f"Control Hub validation error: {response.text}")
 
         try:
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
+            logger.warning(
+                "Control Hub request failed",
+                extra={
+                    "event": "control_hub_request_failed",
+                    "integration": "control_hub",
+                    "http": {
+                        "method": method,
+                        "path": path,
+                        "status_code": exc.response.status_code,
+                    },
+                },
+            )
             raise ControlHubIntegrationError(
                 f"Control Hub request failed with {exc.response.status_code}: {exc.response.text}"
             ) from exc
 
+        logger.info(
+            "Control Hub request completed",
+            extra={
+                "event": "control_hub_request_completed",
+                "integration": "control_hub",
+                "http": {"method": method, "path": path, "status_code": response.status_code},
+            },
+        )
         return response.json()

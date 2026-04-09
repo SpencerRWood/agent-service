@@ -53,6 +53,8 @@ quote-style = "double"
 "**/migrations/env.py" = ["E402"]
 "app/features/orchestration/dependencies.py" = ["B008"]
 "app/features/orchestration/router.py" = ["B008"]
+"app/platform/*/router.py" = ["B008"]
+"app/projections/*/router.py" = ["B008"]
 
 [tool.pytest.ini_options]
 minversion = "8.0"

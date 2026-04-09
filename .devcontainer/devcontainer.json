@@ -8,6 +8,11 @@
 
   "workspaceFolder": "/workspace",
   "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind",
+  "containerEnv": {
+    "LOKI_PUSH_URL": "https://loki.woodhost.cloud/loki/api/v1/push",
+    "LOGGING_ENVIRONMENT": "dev",
+    "LOGGING_SERVICE": "agent-service-devcontainer"
+  },
 
   "customizations": {
     "vscode": {
@@ -29,7 +34,15 @@
 
   "forwardPorts": [8000],
 
-  "runArgs": ["--init"],
+  "runArgs": [
+    "--init",
+    "--label=logging.environment=dev",
+    "--label=logging.service=agent-service-devcontainer",
+    "--log-driver=json-file",
+    "--log-opt=max-size=10m",
+    "--log-opt=max-file=5",
+    "--log-opt=labels=logging.environment,logging.service"
+  ],
 
   "remoteUser": "vscode"
 }

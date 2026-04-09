@@ -1,14 +1,93 @@
+x-logging-labels: &logging-labels
+  logging: "alloy"
+  environment: "${ENV:-dev}"
+  logging.environment: "${ENV:-dev}"
+
 services:
   app:
     image: ${AGENT_SERVICE_IMAGE:-ghcr.io/spencerrwood/agent-service:latest}
     restart: unless-stopped
     env_file:
       - .env
-    ports:
-      - "${AGENT_SERVICE_BIND_HOST:-127.0.0.1}:${AGENT_SERVICE_HOST_PORT:-8000}:8000"
+    environment:
+      APP_ENV: ${ENV:-dev}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      SERVICE_NAME: agent-service
+    labels:
+      <<: *logging-labels
+      service_name: "agent-service"
+      logging.service: "agent-service"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+        labels: "logging.environment,logging.service"
+    expose:
+      - "8000"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://127.0.0.1:8000/api/health/"]
       interval: 30s
       timeout: 5s
       retries: 5
       start_period: 20s
+
+  agents:
+    image: ${AGENT_SERVICE_ADMIN_IMAGE:-ghcr.io/spencerrwood/agent-service-admin:latest}
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        VITE_API_BASE_URL: /api
+    restart: unless-stopped
+    depends_on:
+      - app
+    environment:
+      APP_ENV: ${ENV:-dev}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      SERVICE_NAME: agent-service-web
+    labels:
+      <<: *logging-labels
+      service_name: "agent-service-web"
+      logging.service: "agent-service-web"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+        labels: "logging.environment,logging.service"
+    ports:
+      - "${AGENT_SERVICE_BIND_HOST:-127.0.0.1}:${AGENT_SERVICE_HOST_PORT:-8080}:80"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  promtail:
+    image: grafana/promtail:3.2.1
+    restart: unless-stopped
+    labels:
+      <<: *logging-labels
+      service_name: "promtail"
+      logging.service: "promtail"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+        labels: "logging.environment,logging.service"
+    command:
+      - "-config.file=/etc/promtail/config.yml"
+      - "-config.expand-env=true"
+    environment:
+      LOKI_PUSH_URL: "${LOKI_PUSH_URL}"
+    volumes:
+      - ./deploy/promtail-config.yml:/etc/promtail/config.yml:ro
+      - promtail-positions:/tmp/promtail
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+
+volumes:
+  promtail-positions:
