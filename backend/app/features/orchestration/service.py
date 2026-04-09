@@ -70,9 +70,25 @@ logger = get_logger(__name__)
 class PullRequestStateClient(Protocol):
     async def get_state(self, run: OrchestrationRun) -> PullRequestState | None: ...
 
+    async def get_pull_request_state(
+        self,
+        *,
+        repo: str,
+        pr_number: int,
+    ) -> PullRequestState | None: ...
+
 
 class NullPullRequestStateClient:
     async def get_state(self, run: OrchestrationRun) -> PullRequestState | None:
+        return None
+
+    async def get_pull_request_state(
+        self,
+        *,
+        repo: str,
+        pr_number: int,
+    ) -> PullRequestState | None:
+        del repo, pr_number
         return None
 
 
@@ -402,6 +418,7 @@ class OrchestrationService:
         self._tool_runtime = tool_runtime or ToolRuntime.from_dependencies(
             provider_router=self._provider_router,
             rag_client=self._rag_client,
+            pr_state_reader=self._pr_state_client,
             remote_dispatcher=remote_dispatcher or NullRemoteExecutionDispatcher(),
         )
 

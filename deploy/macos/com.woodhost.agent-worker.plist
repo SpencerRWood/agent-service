@@ -8,8 +8,9 @@
     <key>ProgramArguments</key>
     <array>
       <string>/usr/bin/env</string>
-      <string>python3</string>
-      <string>__REPO_ROOT__/scripts/run_worker_agent.py</string>
+      <string>uv</string>
+      <string>run</string>
+      <string>../scripts/run_worker_agent.py</string>
       <string>--server-base-url</string>
       <string>https://agents.woodhost.cloud</string>
       <string>--target-id</string>
@@ -22,6 +23,8 @@
       <string>codex</string>
       <string>--copilot-command</string>
       <string>copilot</string>
+      <string>--supported-tools</string>
+      <string>*</string>
       <string>--stdout-log-path</string>
       <string>__REPO_ROOT__/.worker/agent-worker.out.log</string>
       <string>--stderr-log-path</string>
@@ -29,7 +32,7 @@
     </array>
 
     <key>WorkingDirectory</key>
-    <string>__REPO_ROOT__</string>
+    <string>__REPO_ROOT__/backend</string>
 
     <key>RunAtLoad</key>
     <true/>

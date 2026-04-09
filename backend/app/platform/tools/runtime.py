@@ -25,6 +25,15 @@ class ToolHandler(Protocol):
     async def execute(self, payload: Mapping[str, Any]) -> dict[str, Any]: ...
 
 
+class PullRequestStateReader(Protocol):
+    async def get_pull_request_state(
+        self,
+        *,
+        repo: str,
+        pr_number: int,
+    ) -> Any: ...
+
+
 class AgentExecuteCodingTaskHandler:
     def __init__(
         self,
@@ -130,6 +139,29 @@ class RagMarkArtifactStaleHandler:
         return receipt.model_dump(mode="json")
 
 
+class RepoGetPullRequestStateHandler:
+    def __init__(self, pr_state_reader: PullRequestStateReader) -> None:
+        self._pr_state_reader = pr_state_reader
+
+    async def execute(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        try:
+            repo = str(payload["repo"])
+            pr_number = int(payload["pr_number"])
+        except KeyError as exc:
+            raise ToolExecutionError(
+                "Missing repo or pr_number payload for PR state lookup."
+            ) from exc
+        except (TypeError, ValueError) as exc:
+            raise ToolExecutionError(
+                "repo must be a string and pr_number must be an integer."
+            ) from exc
+
+        state = await self._pr_state_reader.get_pull_request_state(repo=repo, pr_number=pr_number)
+        if state is None:
+            raise ToolExecutionError("Pull request state is unavailable for the requested input.")
+        return state.model_dump(mode="json")
+
+
 class ToolRuntime:
     def __init__(self, handlers: Mapping[str, ToolHandler]) -> None:
         self._handlers = dict(handlers)
@@ -140,6 +172,7 @@ class ToolRuntime:
         *,
         provider_router: PolicyBasedProviderRouter,
         rag_client: RagIngestionClient,
+        pr_state_reader: PullRequestStateReader,
         remote_dispatcher: RemoteExecutionDispatcher | NullRemoteExecutionDispatcher | None = None,
     ) -> ToolRuntime:
         return cls(
@@ -151,6 +184,7 @@ class ToolRuntime:
                 "rag.stage_provisional_artifact": RagStageArtifactHandler(rag_client),
                 "rag.promote_artifact": RagPromoteArtifactHandler(rag_client),
                 "rag.mark_artifact_stale": RagMarkArtifactStaleHandler(rag_client),
+                "repo.get_pull_request_state": RepoGetPullRequestStateHandler(pr_state_reader),
             }
         )
 

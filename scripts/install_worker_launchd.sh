@@ -32,3 +32,4 @@ launchctl kickstart -k "gui/$(id -u)/com.woodhost.agent-worker"
 
 echo "Installed launchd job at $PLIST_DEST"
 echo "Check status with: launchctl print gui/$(id -u)/com.woodhost.agent-worker"
+echo "Tail logs with: tail -f $REPO_ROOT/.worker/agent-worker.out.log $REPO_ROOT/.worker/agent-worker.err.log"

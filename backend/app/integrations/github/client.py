@@ -181,9 +181,20 @@ class GitHubPullRequestStateClient:
         if not run.pr_number:
             return None
 
+        return await self.get_pull_request_state(repo=run.repo, pr_number=run.pr_number)
+
+    async def get_pull_request_state(
+        self,
+        *,
+        repo: str,
+        pr_number: int,
+    ) -> PullRequestState | None:
+        if not pr_number:
+            return None
+
         pull_request = await self._request(
             "GET",
-            f"/repos/{self._owner}/{run.repo}/pulls/{run.pr_number}",
+            f"/repos/{self._owner}/{repo}/pulls/{pr_number}",
         )
         if not isinstance(pull_request, Mapping):
             raise GitHubIntegrationError("GitHub pull request response was not an object.")
@@ -201,7 +212,7 @@ class GitHubPullRequestStateClient:
 
         reviews = await self._request(
             "GET",
-            f"/repos/{self._owner}/{run.repo}/pulls/{run.pr_number}/reviews",
+            f"/repos/{self._owner}/{repo}/pulls/{pr_number}/reviews",
         )
         if not isinstance(reviews, list):
             raise GitHubIntegrationError("GitHub reviews response was not a list.")
