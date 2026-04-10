@@ -84,6 +84,13 @@ class ExecutionJobRead(BaseModel):
     completed_at: datetime | None = None
 
 
+class ExecutionJobCreate(BaseModel):
+    id: str | None = None
+    target_id: str
+    tool_name: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
 class ExecutionJobListResponse(BaseModel):
     items: list[ExecutionJobRead]
 

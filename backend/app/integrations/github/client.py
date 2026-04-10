@@ -10,9 +10,33 @@ from typing import Any
 import httpx
 
 from app.core.settings import settings
-from app.features.orchestration.models import PullRequestStatus
-from app.features.orchestration.schemas import PullRequestState
-from app.features.orchestration.service import NullPullRequestStateClient, PullRequestStateClient
+from app.platform.agent_tasks.contracts import PullRequestState, PullRequestStatus
+
+
+class PullRequestStateClient:
+    async def get_state(self, run) -> PullRequestState | None: ...
+
+    async def get_pull_request_state(
+        self,
+        *,
+        repo: str,
+        pr_number: int,
+    ) -> PullRequestState | None: ...
+
+
+class NullPullRequestStateClient:
+    async def get_state(self, run) -> PullRequestState | None:
+        del run
+        return None
+
+    async def get_pull_request_state(
+        self,
+        *,
+        repo: str,
+        pr_number: int,
+    ) -> PullRequestState | None:
+        del repo, pr_number
+        return None
 
 
 class GitHubIntegrationError(RuntimeError):

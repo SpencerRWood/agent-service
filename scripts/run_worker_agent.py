@@ -22,68 +22,84 @@ ToolHandler = Callable[[Mapping[str, Any]], Awaitable[dict[str, Any]]]
 
 def build_tool_handlers(
     *,
-    codex_command: str,
-    copilot_command: str,
+    server_base_url: str,
+    opencode_command: str,
 ) -> dict[str, ToolHandler]:
-    from app.features.orchestration.schemas import ApprovedWorkPackage, KnowledgeCaptureArtifact
-    from app.integrations.github.client import GitHubPullRequestStateClient
-    from app.integrations.providers.codex import CodexProvider
-    from app.integrations.providers.copilot_cli import CopilotCliProvider
-    from app.integrations.providers.router import ProviderRoutingError
-    from app.integrations.rag.client import HttpRagIngestionClient
+    from app.platform.agent_tasks.runtime import OpenCodeRuntime
+    from app.platform.agent_tasks.schemas import AgentTaskEnvelope, TaskArtifact
 
-    codex_provider = CodexProvider(command=codex_command)
-    copilot_provider = CopilotCliProvider(command=copilot_command)
-    rag_client = HttpRagIngestionClient.from_settings()
-    pr_state_client = GitHubPullRequestStateClient.from_settings()
+    opencode_runtime = OpenCodeRuntime.from_settings(opencode_command=opencode_command)
 
-    async def execute_coding_task(payload: Mapping[str, Any]) -> dict[str, Any]:
+    class HttpTaskProgressReporter:
+        def __init__(self, client: httpx.AsyncClient, envelope: AgentTaskEnvelope) -> None:
+            self._client = client
+            self._envelope = envelope
+
+        async def publish(
+            self,
+            event_type: str,
+            message: str,
+            payload: dict | None = None,
+        ) -> None:
+            response = await self._client.post(
+                f"/api/worker/agent-tasks/{self._envelope.task_id}/progress",
+                json={
+                    "run_id": self._envelope.run_id,
+                    "step_id": self._envelope.step_id,
+                    "trace_id": self._envelope.trace_id,
+                    "event_type": event_type,
+                    "message": message,
+                    "payload": payload or {},
+                    "actor_type": "worker",
+                    "actor_id": "worker-node",
+                },
+            )
+            response.raise_for_status()
+
+        async def publish_artifact(self, artifact: TaskArtifact) -> None:
+            response = await self._client.post(
+                f"/api/worker/agent-tasks/{self._envelope.task_id}/artifacts",
+                json={
+                    "run_id": self._envelope.run_id,
+                    "run_step_id": self._envelope.step_id,
+                    "artifact_type": artifact.artifact_type,
+                    "title": artifact.title,
+                    "content": artifact.content,
+                    "uri": artifact.uri,
+                    "provenance": artifact.provenance,
+                    "status": artifact.status,
+                },
+            )
+            response.raise_for_status()
+
+    async def run_agent_task(payload: Mapping[str, Any]) -> dict[str, Any]:
         try:
-            work_package = ApprovedWorkPackage.model_validate(payload["work_package"])
+            envelope = AgentTaskEnvelope.model_validate(payload["task"])
         except KeyError as exc:
-            raise RuntimeError("Missing work_package payload for agent execution.") from exc
-
-        provider_name = work_package.provider.value
-        if provider_name == codex_provider.provider_name:
-            provider = codex_provider
-        elif provider_name == copilot_provider.provider_name:
-            provider = copilot_provider
-        else:
-            raise ProviderRoutingError(f"Provider '{provider_name}' is not registered")
-
-        result = await provider.execute(work_package)
-        return result.model_dump(mode="json")
-
-    async def stage_provisional_artifact(payload: Mapping[str, Any]) -> dict[str, Any]:
-        artifact = KnowledgeCaptureArtifact.model_validate(payload["artifact"])
-        receipt = await rag_client.stage_provisional(artifact)
-        return receipt.model_dump(mode="json")
-
-    async def promote_artifact(payload: Mapping[str, Any]) -> dict[str, Any]:
-        artifact = KnowledgeCaptureArtifact.model_validate(payload["artifact"])
-        receipt = await rag_client.promote(artifact)
-        return receipt.model_dump(mode="json")
-
-    async def mark_artifact_stale(payload: Mapping[str, Any]) -> dict[str, Any]:
-        artifact = KnowledgeCaptureArtifact.model_validate(payload["artifact"])
-        reason = str(payload["reason"])
-        receipt = await rag_client.mark_stale(artifact, reason=reason)
-        return receipt.model_dump(mode="json")
-
-    async def get_pull_request_state(payload: Mapping[str, Any]) -> dict[str, Any]:
-        repo = str(payload["repo"])
-        pr_number = int(payload["pr_number"])
-        state = await pr_state_client.get_pull_request_state(repo=repo, pr_number=pr_number)
-        if state is None:
-            raise RuntimeError("Pull request state is unavailable for the requested input.")
-        return state.model_dump(mode="json")
+            raise RuntimeError("Missing task payload for agent task execution.") from exc
+        async with httpx.AsyncClient(base_url=server_base_url.rstrip("/"), timeout=60.0) as client:
+            reporter = HttpTaskProgressReporter(client, envelope)
+            await reporter.publish(
+                "agent.task.worker.claimed",
+                f"Worker claimed {envelope.task_class.value}.",
+                {"backend": envelope.routing.selected_backend.value},
+            )
+            result = await opencode_runtime.execute(envelope, reporter)
+            for artifact in result.artifacts:
+                await reporter.publish_artifact(artifact)
+            await reporter.publish(
+                "agent.task.completed",
+                result.summary,
+                {
+                    "status": result.status,
+                    "backend": result.backend.value,
+                    "execution_path": result.execution_path.value,
+                },
+            )
+            return result.model_dump(mode="json")
 
     return {
-        "agent.execute_coding_task": execute_coding_task,
-        "rag.stage_provisional_artifact": stage_provisional_artifact,
-        "rag.promote_artifact": promote_artifact,
-        "rag.mark_artifact_stale": mark_artifact_stale,
-        "repo.get_pull_request_state": get_pull_request_state,
+        "agent.run_task": run_agent_task,
     }
 
 
@@ -100,8 +116,7 @@ async def main() -> None:
     parser.add_argument("--target-id", required=True)
     parser.add_argument("--worker-id", required=True)
     parser.add_argument("--worker-token", required=True)
-    parser.add_argument("--codex-command", default="codex")
-    parser.add_argument("--copilot-command", default="copilot")
+    parser.add_argument("--opencode-command", default="opencode")
     parser.add_argument("--supported-tools", default="*")
     parser.add_argument("--poll-interval", type=float, default=2.0)
     parser.add_argument("--stdout-log-path", default="")
@@ -109,8 +124,8 @@ async def main() -> None:
     args = parser.parse_args()
 
     handlers = build_tool_handlers(
-        codex_command=args.codex_command,
-        copilot_command=args.copilot_command,
+        server_base_url=args.server_base_url,
+        opencode_command=args.opencode_command,
     )
     supported_tools = resolve_supported_tools(args.supported_tools, handlers)
 

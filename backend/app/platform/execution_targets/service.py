@@ -90,9 +90,15 @@ class ExecutionTargetService:
         target_id: str,
         tool_name: str,
         payload: dict,
+        job_id: str | None = None,
     ) -> ExecutionJobRead:
         await self._require_target(target_id)
-        job = ExecutionJob(target_id=target_id, tool_name=tool_name, payload_json=payload)
+        job = ExecutionJob(
+            id=job_id or None,
+            target_id=target_id,
+            tool_name=tool_name,
+            payload_json=payload,
+        )
         created = await self._repository.create_job(job)
         return ExecutionJobRead.model_validate(created)
 

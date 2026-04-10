@@ -53,7 +53,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
   })
   if (!response.ok) {
-    throw new Error(`Request failed: ${response.status}`)
+    const detail = await response.text()
+    throw new Error(`Request failed: ${response.status}${detail ? ` ${detail}` : ""}`)
   }
   return response.json() as Promise<T>
 }

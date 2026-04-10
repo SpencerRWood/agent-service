@@ -9,7 +9,6 @@ from fastapi.staticfiles import StaticFiles
 from app.core.logging import configure_logging, get_logger, log_request_middleware
 from app.core.router_loader import register_feature_routers
 from app.core.settings import settings
-from app.projections.interaction.app import create_interaction_app
 
 configure_logging(
     level=settings.log_level,
@@ -63,7 +62,6 @@ def create_app() -> FastAPI:
     app.middleware("http")(log_request_middleware)
 
     register_feature_routers(app)
-    app.mount(f"{settings.api_prefix}/interaction", create_interaction_app())
 
     if WEB_ASSETS_DIR.exists():
         app.mount("/assets", StaticFiles(directory=WEB_ASSETS_DIR), name="web-assets")

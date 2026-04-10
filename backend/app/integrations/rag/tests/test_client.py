@@ -2,15 +2,13 @@ import asyncio
 
 import httpx
 
-from app.features.orchestration.models import ProviderName
-from app.features.orchestration.schemas import (
+from app.integrations.rag.client import HttpRagIngestionClient, NoOpRagIngestionClient
+from app.platform.agent_tasks.contracts import (
     ArtifactFile,
     ArtifactManifest,
     ArtifactStage,
     KnowledgeCaptureArtifact,
-    WorkerTarget,
 )
-from app.integrations.rag.client import HttpRagIngestionClient, NoOpRagIngestionClient
 
 
 def build_artifact() -> KnowledgeCaptureArtifact:
@@ -18,8 +16,7 @@ def build_artifact() -> KnowledgeCaptureArtifact:
         manifest=ArtifactManifest(
             artifact_id="artifact-123",
             repo="agent-service",
-            provider=ProviderName.CODEX,
-            worker_target=WorkerTarget.WORKER_B,
+            provider="codex",
             stage=ArtifactStage.PROVISIONAL,
             generated_at="2026-04-01T00:00:00Z",
             source_run_id="run-123",

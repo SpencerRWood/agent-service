@@ -21,7 +21,7 @@ const INITIAL_FORM = {
   user_name: "",
   repo_root: "",
   labels: "mac,worker",
-  supported_tools: "agent.execute_coding_task",
+  supported_tools: "agent.run_task",
   secret_ref: "",
   enabled: true,
   is_default: false,
@@ -36,15 +36,43 @@ export default function ExecutionTargetsPage() {
   const [status, setStatus] = useState<string>("Loading execution targets...")
 
   async function refresh() {
-    const nextTargets = await listExecutionTargets()
-    setTargets(nextTargets)
-    const healthEntries = await Promise.all(
-      nextTargets.map(async (target) => [target.id, await getExecutionTargetHealth(target.id)] as const)
-    )
-    setHealth(Object.fromEntries(healthEntries))
-    const jobResponse = await listExecutionJobs()
-    setJobs(jobResponse.items)
-    setStatus(`Loaded ${nextTargets.length} execution target${nextTargets.length === 1 ? "" : "s"}.`)
+    try {
+      const nextTargets = await listExecutionTargets()
+      setTargets(nextTargets)
+
+      const healthResults = await Promise.allSettled(
+        nextTargets.map(async (target) => [target.id, await getExecutionTargetHealth(target.id)] as const)
+      )
+      const nextHealth: HealthMap = {}
+      let failedHealthChecks = 0
+      for (const result of healthResults) {
+        if (result.status === "fulfilled") {
+          const [targetId, targetHealth] = result.value
+          nextHealth[targetId] = targetHealth
+        } else {
+          failedHealthChecks += 1
+        }
+      }
+      setHealth(nextHealth)
+
+      try {
+        const jobResponse = await listExecutionJobs()
+        setJobs(jobResponse.items)
+      } catch (error) {
+        console.error("Failed to load execution jobs", error)
+        setJobs([])
+      }
+
+      const targetLabel = `${nextTargets.length} execution target${nextTargets.length === 1 ? "" : "s"}`
+      if (failedHealthChecks > 0) {
+        setStatus(`Loaded ${targetLabel}, but ${failedHealthChecks} health check${failedHealthChecks === 1 ? "" : "s"} failed.`)
+      } else {
+        setStatus(`Loaded ${targetLabel}.`)
+      }
+    } catch (error) {
+      console.error("Failed to load execution targets", error)
+      setStatus(error instanceof Error ? error.message : "Failed to load execution targets.")
+    }
   }
 
   useEffect(() => {
