@@ -25,6 +25,19 @@ class RunRepository:
         await self._session.refresh(step)
         return step
 
+    async def update_run(self, run: Run) -> Run:
+        await self._session.commit()
+        await self._session.refresh(run)
+        return run
+
+    async def get_step(self, step_id: str) -> RunStep | None:
+        return await self._session.get(RunStep, step_id)
+
+    async def update_step(self, step: RunStep) -> RunStep:
+        await self._session.commit()
+        await self._session.refresh(step)
+        return step
+
     async def list_steps(self, run_id: str) -> Sequence[RunStep]:
         result = await self._session.execute(
             select(RunStep)

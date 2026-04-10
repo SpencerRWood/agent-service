@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
@@ -106,3 +107,22 @@ async def publish_agent_task_artifact(
 ) -> dict[str, str]:
     await service.publish_artifact(task_id, request)
     return {"status": "created"}
+
+
+@worker_router.post("/{task_id}/deferred", status_code=202)
+async def mark_agent_task_deferred(
+    task_id: str,
+    request: dict,
+    service: AgentTaskService = Depends(get_agent_task_service),
+) -> dict[str, str]:
+    available_at = request.get("available_at")
+    parsed_available_at = (
+        datetime.fromisoformat(str(available_at).replace("Z", "+00:00")) if available_at else None
+    )
+    await service.note_deferred(
+        task_id=task_id,
+        available_at=parsed_available_at,
+        reason_code=str(request.get("reason_code") or "backend_unavailable"),
+        backend=str(request.get("backend")) if request.get("backend") else None,
+    )
+    return {"status": "accepted"}

@@ -1,6 +1,11 @@
 import asyncio
 
-from app.platform.agent_tasks.schemas import AgentTaskCreateRequest, TaskClass
+from app.platform.agent_tasks.schemas import (
+    AgentTaskCreateRequest,
+    BackendName,
+    TaskClass,
+    TaskState,
+)
 from app.platform.agent_tasks.service import AgentTaskService
 from app.platform.artifacts.schemas import ArtifactRead
 from app.platform.events.schemas import EventRead
@@ -49,6 +54,14 @@ class FakeRunService:
     async def list_steps(self, run_id):
         del run_id
         return [await self.create_step("", None)]
+
+    async def update_run_status(self, run_id, status_value):
+        del run_id, status_value
+        return await self.create_run(None)
+
+    async def update_step_status(self, step_id, *, status_value, output=None):
+        del step_id, status_value, output
+        return await self.create_step("", None)
 
 
 class FakeEventService:
@@ -141,10 +154,9 @@ class FakeExecutionTargetService:
         raise AssertionError("get_job should not be called in this test")
 
 
-def test_create_task_builds_envelope_with_explicit_job_id():
+def test_create_task_builds_envelope_with_worker_dispatch_and_broker_hints():
     service = AgentTaskService(
         run_service=FakeRunService(),
-        run_repository=None,
         event_service=FakeEventService(),
         artifact_service=FakeArtifactService(),
         execution_target_service=FakeExecutionTargetService(),
@@ -161,6 +173,8 @@ def test_create_task_builds_envelope_with_explicit_job_id():
     )
 
     assert response.task.task_id == "task-1"
+    assert response.task.state == TaskState.QUEUED
     assert response.task.job is not None
     assert response.task.job.id == "task-1"
-    assert response.task.envelope.routing.selected_backend.value == "codex"
+    assert response.task.envelope.dispatch.target_id == "worker-b"
+    assert response.task.envelope.preferred_backend == BackendName.CODEX

@@ -117,3 +117,10 @@ class WorkerJobCompleteRequest(BaseModel):
 class WorkerJobFailRequest(BaseModel):
     worker_id: str
     error: dict[str, Any]
+
+
+class WorkerJobRequeueRequest(BaseModel):
+    worker_id: str
+    payload: dict[str, Any]
+    available_at: datetime | None = None
+    reason: dict[str, Any] = Field(default_factory=dict)

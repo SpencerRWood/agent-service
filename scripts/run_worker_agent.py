@@ -26,7 +26,7 @@ def build_tool_handlers(
     opencode_command: str,
 ) -> dict[str, ToolHandler]:
     from app.platform.agent_tasks.runtime import OpenCodeRuntime
-    from app.platform.agent_tasks.schemas import AgentTaskEnvelope, TaskArtifact
+    from app.platform.agent_tasks.schemas import AgentTaskEnvelope, TaskArtifact, TaskState
 
     opencode_runtime = OpenCodeRuntime.from_settings(opencode_command=opencode_command)
 
@@ -46,7 +46,8 @@ def build_tool_handlers(
                 json={
                     "run_id": self._envelope.run_id,
                     "step_id": self._envelope.step_id,
-                    "trace_id": self._envelope.trace_id,
+                    "correlation_id": self._envelope.correlation_id,
+                    "state": payload.get("state") if payload else None,
                     "event_type": event_type,
                     "message": message,
                     "payload": payload or {},
@@ -82,18 +83,27 @@ def build_tool_handlers(
             await reporter.publish(
                 "agent.task.worker.claimed",
                 f"Worker claimed {envelope.task_class.value}.",
-                {"backend": envelope.routing.selected_backend.value},
+                {
+                    "state": TaskState.QUEUED.value,
+                    "worker_id": socket.gethostname(),
+                    "preferred_backend": envelope.preferred_backend.value
+                    if envelope.preferred_backend is not None
+                    else None,
+                },
             )
             result = await opencode_runtime.execute(envelope, reporter)
             for artifact in result.artifacts:
                 await reporter.publish_artifact(artifact)
             await reporter.publish(
-                "agent.task.completed",
+                "agent.task.finished",
                 result.summary,
                 {
-                    "status": result.status,
-                    "backend": result.backend.value,
-                    "execution_path": result.execution_path.value,
+                    "state": result.state.value,
+                    "backend": result.backend.value if result.backend is not None else None,
+                    "reason_code": result.reason_code,
+                    "retry_after": (
+                        result.retry_after.isoformat() if result.retry_after is not None else None
+                    ),
                 },
             )
             return result.model_dump(mode="json")
@@ -170,6 +180,33 @@ async def main() -> None:
                     raise RuntimeError(f"Worker does not support tool '{tool_name}'.") from exc
 
                 result = await handler(payload)
+                if result.get("state") == "deferred_until_reset":
+                    task = payload.get("task", {})
+                    deferred_response = await client.post(
+                        f"/api/worker/agent-tasks/{task.get('task_id')}/deferred",
+                        json={
+                            "available_at": result.get("retry_after"),
+                            "reason_code": result.get("reason_code"),
+                            "backend": result.get("backend"),
+                        },
+                    )
+                    deferred_response.raise_for_status()
+                    requeue_response = await client.post(
+                        f"/api/worker/execution-targets/{args.target_id}/jobs/{job['id']}/requeue",
+                        headers=headers,
+                        json={
+                            "worker_id": args.worker_id,
+                            "payload": payload,
+                            "available_at": result.get("retry_after"),
+                            "reason": {
+                                "reason_code": result.get("reason_code"),
+                                "backend": result.get("backend"),
+                            },
+                        },
+                    )
+                    requeue_response.raise_for_status()
+                    await asyncio.sleep(args.poll_interval)
+                    continue
                 complete_response = await client.post(
                     f"/api/worker/execution-targets/{args.target_id}/jobs/{job['id']}/complete",
                     headers=headers,

@@ -75,21 +75,8 @@ class Settings(BaseSettings):
         default=True,
         validation_alias="ORCHESTRATION_DRY_RUN",
     )
-    codex_command: str = Field(default="codex", validation_alias="CODEX_COMMAND")
-    copilot_cli_command: str = Field(
-        default="copilot",
-        validation_alias="COPILOT_CLI_COMMAND",
-    )
     opencode_command: str = Field(default="opencode", validation_alias="OPENCODE_COMMAND")
     opencode_dry_run: bool = Field(default=True, validation_alias="OPENCODE_DRY_RUN")
-    local_llm_command: str = Field(
-        default="local-llm",
-        validation_alias="LOCAL_LLM_COMMAND",
-    )
-    local_llm_dry_run: bool = Field(
-        default=True,
-        validation_alias="LOCAL_LLM_DRY_RUN",
-    )
     git_provider_name: str = Field(
         default="github",
         validation_alias="GIT_PROVIDER_NAME",
@@ -189,7 +176,6 @@ class Settings(BaseSettings):
         "debug",
         "rag_ingestion_enabled",
         "opencode_dry_run",
-        "local_llm_dry_run",
         mode="before",
     )
     @classmethod

@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+from datetime import datetime
 from uuid import uuid4
 
 from fastapi import HTTPException, status
 
 from app.platform.agent_tasks.runtime import (
     available_route_profiles,
-    default_backend_for_task,
-    default_fallback_for_task,
+    classify_task,
+    default_allowed_backends_for_task,
+    default_preferred_backend_for_task,
+    normalize_goal,
 )
 from app.platform.agent_tasks.schemas import (
     AgentTaskCreateRequest,
@@ -16,8 +19,8 @@ from app.platform.agent_tasks.schemas import (
     AgentTaskProgressCreate,
     AgentTaskRead,
     AgentTaskResult,
-    AgentTaskRoutingDecision,
-    ExecutionPath,
+    TaskState,
+    WorkerDispatchDecision,
 )
 from app.platform.artifacts.repository import ArtifactRepository
 from app.platform.artifacts.schemas import ArtifactCreate
@@ -36,53 +39,60 @@ class AgentTaskService:
         self,
         *,
         run_service: RunService,
-        run_repository: RunRepository,
         event_service: EventService,
         artifact_service: ArtifactService,
         execution_target_service: ExecutionTargetService,
     ) -> None:
         self._run_service = run_service
-        self._run_repository = run_repository
         self._event_service = event_service
         self._artifact_service = artifact_service
         self._execution_target_service = execution_target_service
 
     async def create_task(self, request: AgentTaskCreateRequest) -> AgentTaskCreateResponse:
-        run = await self._run_service.create_run(RunCreate(status="queued"))
+        task_class = request.task_class or classify_task(request.prompt)
+        run = await self._run_service.create_run(RunCreate(status=TaskState.QUEUED.value))
         step = await self._run_service.create_step(
             run.id,
             RunStepCreate(
-                step_type=request.task_class.value,
-                title=request.task_class.value.replace("_", " "),
-                status="queued",
+                step_type=task_class.value,
+                title=task_class.value.replace("_", " "),
+                status=TaskState.QUEUED.value,
                 sequence_index=0,
                 input={
-                    "prompt": request.prompt,
-                    "repo": request.repo,
-                    "project_path": request.project_path,
-                    "context": request.context,
+                    "user_prompt": request.prompt,
+                    "target_repo": request.repo,
+                    "target_branch": request.target_branch,
+                    "metadata": request.metadata,
                 },
             ),
         )
-        trace_id = str(uuid4())
-        routing = await self._route_request(request)
+        correlation_id = str(uuid4())
+        dispatch = await self._route_request(request=request, task_class=task_class)
+        allowed_backends = request.allowed_backends or default_allowed_backends_for_task(task_class)
+        preferred_backend = request.backend or default_preferred_backend_for_task(task_class)
+        if preferred_backend not in allowed_backends:
+            preferred_backend = allowed_backends[0]
+
         envelope = AgentTaskEnvelope(
             task_id=run.id,
             run_id=run.id,
             step_id=step.id,
-            trace_id=trace_id,
-            task_class=request.task_class,
-            prompt=request.prompt,
-            repo=request.repo,
-            project_path=request.project_path,
-            context=request.context,
-            routing=routing,
-            source=request.source,
-            approvals=request.approvals,
-            branch_workflow=request.branch_workflow,
-            usage_limits=request.usage_limits,
-            final_artifact_policy=request.final_artifact_policy,
+            correlation_id=correlation_id,
+            user_prompt=request.prompt,
+            normalized_goal=normalize_goal(request.prompt),
+            task_class=task_class,
+            target_repo=request.repo,
+            target_branch=request.target_branch,
+            execution_mode=request.execution_mode,
+            allowed_backends=allowed_backends,
+            preferred_backend=preferred_backend,
+            approval_policy=request.approval_policy or {"mode": "none"},
+            timeout_policy=request.timeout_policy or {"seconds": 900},
+            return_artifacts=request.return_artifacts,
+            metadata=request.metadata,
+            dispatch=dispatch,
         )
+
         await self._event_service.create(
             EventCreate(
                 run_id=run.id,
@@ -91,19 +101,23 @@ class AgentTaskService:
                 entity_id=run.id,
                 event_type="agent.task.created",
                 payload={
-                    "task_class": request.task_class.value,
-                    "backend": routing.selected_backend.value,
-                    "execution_path": routing.execution_path.value,
-                    "target_id": routing.target_id,
-                    "reason": routing.reason,
+                    "state": TaskState.QUEUED.value,
+                    "task_class": task_class.value,
+                    "normalized_goal": envelope.normalized_goal,
+                    "preferred_backend": preferred_backend.value,
+                    "allowed_backends": [backend.value for backend in allowed_backends],
+                    "execution_mode": envelope.execution_mode.value,
+                    "dispatch_target": dispatch.target_id,
+                    "dispatch_reason": dispatch.reason,
                 },
                 actor_type="broker",
                 actor_id="agent-services",
-                trace_id=trace_id,
+                trace_id=correlation_id,
             )
         )
+
         job = await self._execution_target_service.create_job(
-            target_id=routing.target_id,
+            target_id=dispatch.target_id,
             tool_name="agent.run_task",
             payload={"task": envelope.model_dump(mode="json")},
             job_id=run.id,
@@ -118,6 +132,12 @@ class AgentTaskService:
         return await self._build_task_read(task_id)
 
     async def publish_progress(self, task_id: str, request: AgentTaskProgressCreate) -> None:
+        if request.state is not None:
+            await self._run_service.update_run_status(request.run_id, request.state.value)
+            await self._run_service.update_step_status(
+                request.step_id,
+                status_value=request.state.value,
+            )
         await self._event_service.create(
             EventCreate(
                 run_id=request.run_id,
@@ -125,10 +145,14 @@ class AgentTaskService:
                 entity_type="agent_task",
                 entity_id=task_id,
                 event_type=request.event_type,
-                payload={"message": request.message, **request.payload},
+                payload={
+                    "message": request.message,
+                    "state": request.state.value if request.state is not None else None,
+                    **request.payload,
+                },
                 actor_type=request.actor_type,
                 actor_id=request.actor_id,
-                trace_id=request.trace_id,
+                trace_id=request.correlation_id,
             )
         )
 
@@ -151,28 +175,60 @@ class AgentTaskService:
             )
         )
 
-    async def _route_request(self, request: AgentTaskCreateRequest) -> AgentTaskRoutingDecision:
-        selected_backend = request.backend or default_backend_for_task(request.task_class)
-        fallback_backend = request.fallback_backend
-        if (
-            fallback_backend is None
-            and (request.execution_path or ExecutionPath.OPENCODE) == ExecutionPath.OPENCODE
-        ):
-            fallback_backend = default_fallback_for_task(request.task_class)
-        execution_path = request.execution_path or ExecutionPath.OPENCODE
-        route_profile = request.route_profile
-        if route_profile is None:
-            route_profile = available_route_profiles(request.task_class)[0]
+    async def note_deferred(
+        self,
+        *,
+        task_id: str,
+        available_at: datetime | None,
+        reason_code: str,
+        backend: str | None,
+    ) -> None:
+        task = await self._build_task_read(task_id)
+        await self._run_service.update_run_status(task.run.id, TaskState.DEFERRED_UNTIL_RESET.value)
+        await self._run_service.update_step_status(
+            task.step.id,
+            status_value=TaskState.DEFERRED_UNTIL_RESET.value,
+            output={
+                "reason_code": reason_code,
+                "backend": backend,
+                "available_at": available_at.isoformat() if available_at is not None else None,
+            },
+        )
+        await self._event_service.create(
+            EventCreate(
+                run_id=task.run.id,
+                run_step_id=task.step.id,
+                entity_type="agent_task",
+                entity_id=task_id,
+                event_type="agent.task.deferred",
+                payload={
+                    "state": TaskState.DEFERRED_UNTIL_RESET.value,
+                    "reason_code": reason_code,
+                    "backend": backend,
+                    "available_at": available_at.isoformat() if available_at is not None else None,
+                    "user_status": "Task deferred until backend reset window.",
+                },
+                actor_type="broker",
+                actor_id="agent-services",
+                trace_id=task.envelope.correlation_id,
+            )
+        )
 
+    async def _route_request(
+        self,
+        *,
+        request: AgentTaskCreateRequest,
+        task_class,
+    ) -> WorkerDispatchDecision:
+        route_profile = request.route_profile or available_route_profiles(task_class)[0]
         target = await self._execution_target_service.choose_target(
             explicit_target_id=request.target_id,
             tool_name="agent.run_task",
             routing_context={
                 "prompt": request.prompt,
-                "task_class": request.task_class.value,
+                "task_class": task_class.value,
                 "route_profile": route_profile,
-                "backend": selected_backend.value,
-                "execution_path": execution_path.value,
+                "execution_mode": request.execution_mode.value,
             },
         )
         if target is None:
@@ -180,27 +236,14 @@ class AgentTaskService:
                 status_code=status.HTTP_409_CONFLICT,
                 detail="No execution target is available for agent.run_task.",
             )
-
-        return AgentTaskRoutingDecision(
-            execution_path=execution_path,
-            selected_backend=selected_backend,
-            fallback_backend=(None if execution_path == ExecutionPath.DIRECT else fallback_backend),
+        return WorkerDispatchDecision(
             target_id=target.id,
             route_profile=route_profile,
-            reason=(
-                f"{execution_path.value} selected {selected_backend.value} for "
-                f"{request.task_class.value}."
-            ),
+            reason=f"{request.execution_mode.value} selected worker '{target.id}' for {task_class.value}.",
             debug={
                 "request_backend": request.backend.value if request.backend else None,
-                "request_fallback_backend": (
-                    request.fallback_backend.value if request.fallback_backend else None
-                ),
-                "request_execution_path": (
-                    request.execution_path.value if request.execution_path else None
-                ),
-                "supported_route_profiles": list(available_route_profiles(request.task_class)),
                 "selected_target": target.id,
+                "supported_route_profiles": list(available_route_profiles(task_class)),
             },
         )
 
@@ -233,6 +276,7 @@ class AgentTaskService:
             result = AgentTaskResult.model_validate(job.result_json)
         return AgentTaskRead(
             task_id=task_id,
+            state=TaskState(run.status),
             envelope=envelope,
             run=run,
             step=step,
@@ -252,7 +296,6 @@ def build_agent_task_service(
 ) -> AgentTaskService:
     return AgentTaskService(
         run_service=RunService(run_repository),
-        run_repository=run_repository,
         event_service=EventService(event_repository),
         artifact_service=ArtifactService(artifact_repository),
         execution_target_service=execution_target_service,

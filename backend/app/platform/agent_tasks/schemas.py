@@ -28,9 +28,31 @@ class BackendName(StrEnum):
     COPILOT_CLI = "copilot_cli"
 
 
-class ExecutionPath(StrEnum):
+class ExecutionMode(StrEnum):
     OPENCODE = "opencode"
-    DIRECT = "direct"
+
+
+class TaskState(StrEnum):
+    QUEUED = "queued"
+    PREFLIGHT_CHECK = "preflight_check"
+    READY_TO_RUN = "ready_to_run"
+    RUNNING = "running"
+    RATE_LIMITED = "rate_limited"
+    DEFERRED_UNTIL_RESET = "deferred_until_reset"
+    REROUTED = "rerouted"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class ReasonCode(StrEnum):
+    TASK_CLASS_MATCH = "task_class_match"
+    CODEX_AVAILABLE = "codex_available"
+    CODEX_RATE_LIMITED = "codex_rate_limited"
+    COPILOT_AVAILABLE = "copilot_available"
+    LOCAL_LLM_SUFFICIENT = "local_llm_sufficient"
+    REPO_CONTEXT_REQUIRED = "repo_context_required"
+    BACKEND_UNAVAILABLE = "backend_unavailable"
+    RUNTIME_RATE_LIMITED = "runtime_rate_limited"
 
 
 class TaskArtifact(BaseModel):
@@ -42,10 +64,7 @@ class TaskArtifact(BaseModel):
     provenance: dict[str, Any] = Field(default_factory=dict)
 
 
-class AgentTaskRoutingDecision(BaseModel):
-    execution_path: ExecutionPath
-    selected_backend: BackendName
-    fallback_backend: BackendName | None = None
+class WorkerDispatchDecision(BaseModel):
     target_id: str | None = None
     route_profile: str | None = None
     reason: str
@@ -56,43 +75,46 @@ class AgentTaskEnvelope(BaseModel):
     task_id: str
     run_id: str
     step_id: str
-    trace_id: str
+    correlation_id: str
+    user_prompt: str
+    normalized_goal: str
     task_class: TaskClass
-    prompt: str
-    repo: str | None = None
-    project_path: str | None = None
-    context: dict[str, Any] = Field(default_factory=dict)
-    routing: AgentTaskRoutingDecision
-    source: dict[str, Any] = Field(default_factory=dict)
-    approvals: dict[str, Any] = Field(default_factory=dict)
-    branch_workflow: dict[str, Any] = Field(default_factory=dict)
-    usage_limits: dict[str, Any] = Field(default_factory=dict)
-    final_artifact_policy: dict[str, Any] = Field(default_factory=dict)
+    target_repo: str | None = None
+    target_branch: str | None = None
+    execution_mode: ExecutionMode = ExecutionMode.OPENCODE
+    allowed_backends: list[BackendName] = Field(default_factory=list)
+    preferred_backend: BackendName | None = None
+    approval_policy: dict[str, Any] = Field(default_factory=dict)
+    timeout_policy: dict[str, Any] = Field(default_factory=dict)
+    return_artifacts: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    dispatch: WorkerDispatchDecision
 
 
 class AgentTaskCreateRequest(BaseModel):
-    task_class: TaskClass
+    task_class: TaskClass | None = None
     prompt: str
     repo: str | None = None
-    project_path: str | None = None
+    target_branch: str | None = None
     context: dict[str, Any] = Field(default_factory=dict)
-    execution_path: ExecutionPath | None = None
+    execution_mode: ExecutionMode = ExecutionMode.OPENCODE
+    allowed_backends: list[BackendName] = Field(default_factory=list)
     backend: BackendName | None = None
     fallback_backend: BackendName | None = None
     target_id: str | None = None
     route_profile: str | None = None
-    source: dict[str, Any] = Field(default_factory=dict)
-    approvals: dict[str, Any] = Field(default_factory=dict)
-    branch_workflow: dict[str, Any] = Field(default_factory=dict)
-    usage_limits: dict[str, Any] = Field(default_factory=dict)
-    final_artifact_policy: dict[str, Any] = Field(default_factory=dict)
+    approval_policy: dict[str, Any] = Field(default_factory=dict)
+    timeout_policy: dict[str, Any] = Field(default_factory=dict)
+    return_artifacts: list[str] = Field(default_factory=lambda: ["summary"])
+    metadata: dict[str, Any] = Field(default_factory=dict)
     wait_for_completion: bool = False
 
 
 class AgentTaskProgressCreate(BaseModel):
     run_id: str
     step_id: str
-    trace_id: str | None = None
+    correlation_id: str | None = None
+    state: TaskState | None = None
     event_type: str
     message: str
     payload: dict[str, Any] = Field(default_factory=dict)
@@ -101,10 +123,12 @@ class AgentTaskProgressCreate(BaseModel):
 
 
 class AgentTaskResult(BaseModel):
-    status: str
-    backend: BackendName
-    execution_path: ExecutionPath
+    state: TaskState
+    backend: BackendName | None = None
+    execution_mode: ExecutionMode
     summary: str
+    reason_code: str | None = None
+    retry_after: datetime | None = None
     raw_output: dict[str, Any] = Field(default_factory=dict)
     artifacts: list[TaskArtifact] = Field(default_factory=list)
     metrics: dict[str, Any] = Field(default_factory=dict)
@@ -113,6 +137,7 @@ class AgentTaskResult(BaseModel):
 
 class AgentTaskRead(BaseModel):
     task_id: str
+    state: TaskState
     envelope: AgentTaskEnvelope
     run: RunRead
     step: RunStepRead

@@ -15,6 +15,7 @@ from app.platform.execution_targets.schemas import (
     WorkerJobClaimResponse,
     WorkerJobCompleteRequest,
     WorkerJobFailRequest,
+    WorkerJobRequeueRequest,
 )
 from app.platform.execution_targets.service import ExecutionTargetService, validate_worker_secret
 
@@ -125,3 +126,16 @@ async def fail_execution_job(
     target = await service._require_target(target_id)
     validate_worker_secret(target, x_worker_token)
     return await service.fail_job(target_id=target_id, job_id=job_id, request=request)
+
+
+@worker_router.post("/{target_id}/jobs/{job_id}/requeue", response_model=ExecutionJobRead)
+async def requeue_execution_job(
+    target_id: str,
+    job_id: str,
+    request: WorkerJobRequeueRequest,
+    service: ExecutionTargetService = Depends(get_execution_target_service),
+    x_worker_token: str | None = Header(default=None, alias="X-Worker-Token"),
+) -> ExecutionJobRead:
+    target = await service._require_target(target_id)
+    validate_worker_secret(target, x_worker_token)
+    return await service.requeue_job(target_id=target_id, job_id=job_id, request=request)
