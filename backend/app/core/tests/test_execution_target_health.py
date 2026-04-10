@@ -15,7 +15,7 @@ def build_target(*, enabled: bool = True, seconds_ago: float | None = None) -> E
         enabled=enabled,
         is_default=False,
         labels_json=[],
-        supported_tools_json=["agent.execute_coding_task"],
+        supported_tools_json=["agent.run_task"],
         metadata_json={},
         last_seen_at=last_seen_at,
     )

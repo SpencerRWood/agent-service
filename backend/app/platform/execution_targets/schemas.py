@@ -84,6 +84,13 @@ class ExecutionJobRead(BaseModel):
     completed_at: datetime | None = None
 
 
+class ExecutionJobCreate(BaseModel):
+    id: str | None = None
+    target_id: str
+    tool_name: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
 class ExecutionJobListResponse(BaseModel):
     items: list[ExecutionJobRead]
 
@@ -110,3 +117,10 @@ class WorkerJobCompleteRequest(BaseModel):
 class WorkerJobFailRequest(BaseModel):
     worker_id: str
     error: dict[str, Any]
+
+
+class WorkerJobRequeueRequest(BaseModel):
+    worker_id: str
+    payload: dict[str, Any]
+    available_at: datetime | None = None
+    reason: dict[str, Any] = Field(default_factory=dict)

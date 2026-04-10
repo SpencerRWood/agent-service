@@ -42,3 +42,27 @@ class RunService:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
         steps = await self._repository.list_steps(run_id)
         return [RunStepRead.model_validate(step) for step in steps]
+
+    async def update_run_status(self, run_id: str, status_value: str) -> RunRead:
+        run = await self._repository.get_run(run_id)
+        if run is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+        run.status = status_value
+        updated = await self._repository.update_run(run)
+        return RunRead.model_validate(updated)
+
+    async def update_step_status(
+        self,
+        step_id: str,
+        *,
+        status_value: str,
+        output: dict | None = None,
+    ) -> RunStepRead:
+        step = await self._repository.get_step(step_id)
+        if step is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run step not found")
+        step.status = status_value
+        if output is not None:
+            step.output_json = output
+        updated = await self._repository.update_step(step)
+        return RunStepRead.model_validate(updated)

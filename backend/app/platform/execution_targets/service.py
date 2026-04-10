@@ -21,6 +21,7 @@ from app.platform.execution_targets.schemas import (
     WorkerHeartbeatRequest,
     WorkerJobCompleteRequest,
     WorkerJobFailRequest,
+    WorkerJobRequeueRequest,
 )
 
 
@@ -90,9 +91,15 @@ class ExecutionTargetService:
         target_id: str,
         tool_name: str,
         payload: dict,
+        job_id: str | None = None,
     ) -> ExecutionJobRead:
         await self._require_target(target_id)
-        job = ExecutionJob(target_id=target_id, tool_name=tool_name, payload_json=payload)
+        job = ExecutionJob(
+            id=job_id or None,
+            target_id=target_id,
+            tool_name=tool_name,
+            payload_json=payload,
+        )
         created = await self._repository.create_job(job)
         return ExecutionJobRead.model_validate(created)
 
@@ -213,6 +220,27 @@ class ExecutionTargetService:
                 status_code=status.HTTP_403_FORBIDDEN, detail="Job does not belong to target."
             )
         updated = await self._repository.fail_job(job, error_payload=request.error)
+        return ExecutionJobRead.model_validate(updated)
+
+    async def requeue_job(
+        self,
+        *,
+        target_id: str,
+        job_id: str,
+        request: WorkerJobRequeueRequest,
+    ) -> ExecutionJobRead:
+        await self._require_authorized_target(target_id)
+        job = await self._require_job(job_id)
+        if job.target_id != target_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, detail="Job does not belong to target."
+            )
+        updated = await self._repository.requeue_job(
+            job,
+            payload=request.payload,
+            available_at=request.available_at,
+            reason=request.reason,
+        )
         return ExecutionJobRead.model_validate(updated)
 
     async def _require_target(self, target_id: str) -> ExecutionTarget:

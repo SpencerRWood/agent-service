@@ -4,34 +4,17 @@ import hmac
 
 import httpx
 
-from app.features.orchestration.models import ProviderName
-from app.features.orchestration.schemas import (
-    PullRequestState,
-    WorkerExecutionResult,
-    WorkerTarget,
-)
 from app.integrations.github.client import (
     GitHubPullRequestStateClient,
     GitHubWebhookEvent,
     GitHubWebhookVerifier,
 )
+from app.platform.agent_tasks.contracts import PullRequestState
 
 
 class RunStub:
     repo = "agent-service"
     pr_number = 42
-    provider = ProviderName.CODEX
-    execution_result_json = WorkerExecutionResult(
-        provider="codex",
-        worker_target=WorkerTarget.WORKER_B,
-        branch_name="feature/test",
-        commit_shas=["abc123"],
-        pr_title="PR",
-        pr_body="Body",
-        pr_url="https://github.com/example/agent-service/pull/42",
-        pr_number=42,
-        execution_summary="done",
-    ).model_dump(mode="json")
 
 
 def test_github_pr_state_client_returns_approved_state():

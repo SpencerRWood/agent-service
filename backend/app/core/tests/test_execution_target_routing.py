@@ -17,7 +17,7 @@ def build_target(
         enabled=True,
         is_default=is_default,
         labels_json=labels or [],
-        supported_tools_json=supported_tools or ["agent.execute_coding_task"],
+        supported_tools_json=supported_tools or ["agent.run_task"],
         metadata_json={"target_kind": target_kind},
     )
 

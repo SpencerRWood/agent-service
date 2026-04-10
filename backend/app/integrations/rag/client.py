@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 
 from app.core.logging import get_logger
 from app.core.settings import settings
-from app.features.orchestration.schemas import KnowledgeCaptureArtifact
+from app.platform.agent_tasks.contracts import KnowledgeCaptureArtifact
 
 logger = get_logger(__name__)
 
@@ -109,7 +109,7 @@ class HttpRagIngestionClient:
                     "text": document.content,
                     "title": document.title,
                     "external_id": artifact.manifest.artifact_id,
-                    "source_name": artifact.manifest.provider.value,
+                    "source_name": artifact.manifest.provider,
                     "content_type": document.media_type,
                     "tags": artifact.manifest.tags,
                     "project": self._project_value(artifact),

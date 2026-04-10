@@ -102,6 +102,14 @@ class ExecutionTargetRepository:
         for job in result.scalars().all():
             if supported_tools and not _supports_tool(supported_tools, job.tool_name):
                 continue
+            not_before = (job.payload_json or {}).get("available_at")
+            if isinstance(not_before, str):
+                try:
+                    available_at = datetime.fromisoformat(not_before.replace("Z", "+00:00"))
+                except ValueError:
+                    available_at = None
+                if available_at is not None and available_at > datetime.now(UTC):
+                    continue
             job.status = "claimed"
             job.claimed_by = worker_id
             job.claimed_at = datetime.now(UTC)
@@ -127,6 +135,30 @@ class ExecutionTargetRepository:
         job.status = "failed"
         job.error_json = error_payload
         job.completed_at = datetime.now(UTC)
+        await self._session.commit()
+        await self._session.refresh(job)
+        return job
+
+    async def requeue_job(
+        self,
+        job: ExecutionJob,
+        *,
+        payload: dict,
+        available_at: datetime | None,
+        reason: dict,
+    ) -> ExecutionJob:
+        payload_with_schedule = {
+            **payload,
+            "available_at": available_at.isoformat() if available_at is not None else None,
+            "defer_reason": reason,
+        }
+        job.status = "queued"
+        job.payload_json = payload_with_schedule
+        job.error_json = None
+        job.result_json = None
+        job.claimed_by = None
+        job.claimed_at = None
+        job.completed_at = None
         await self._session.commit()
         await self._session.refresh(job)
         return job
