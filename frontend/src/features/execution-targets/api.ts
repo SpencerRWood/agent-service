@@ -60,11 +60,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export async function listExecutionTargets(): Promise<ExecutionTarget[]> {
-  return request("/api/admin/execution-targets/")
+  return request("/admin/execution-targets/")
 }
 
 export async function createExecutionTarget(payload: Record<string, unknown>): Promise<ExecutionTarget> {
-  return request("/api/admin/execution-targets/", {
+  return request("/admin/execution-targets/", {
     method: "POST",
     body: JSON.stringify(payload),
   })
@@ -74,17 +74,17 @@ export async function updateExecutionTarget(
   id: string,
   payload: Record<string, unknown>
 ): Promise<ExecutionTarget> {
-  return request(`/api/admin/execution-targets/${id}`, {
+  return request(`/admin/execution-targets/${id}`, {
     method: "PATCH",
     body: JSON.stringify(payload),
   })
 }
 
 export async function getExecutionTargetHealth(id: string): Promise<ExecutionTargetHealth> {
-  return request(`/api/admin/execution-targets/${id}/health`)
+  return request(`/admin/execution-targets/${id}/health`)
 }
 
 export async function listExecutionJobs(targetId?: string): Promise<{ items: ExecutionJob[] }> {
   const suffix = targetId ? `?target_id=${encodeURIComponent(targetId)}` : ""
-  return request(`/api/admin/execution-jobs/${suffix}`)
+  return request(`/admin/execution-jobs/${suffix}`)
 }
