@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from pydantic import Field, computed_field, field_validator
+from pydantic import AliasChoices, Field, computed_field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -13,10 +13,19 @@ class Settings(BaseSettings):
 
     app_name: str = Field(default="Service Template", validation_alias="APP_NAME")
     app_version: str = Field(default="0.1.0", validation_alias="APP_VERSION")
-    environment: str = Field(default="development", validation_alias="ENV")
+    environment: str = Field(
+        default="development",
+        validation_alias=AliasChoices("AGENT_ENV", "ENV"),
+    )
     debug: bool = Field(default=False, validation_alias="DEBUG")
-    log_level: str = Field(default="INFO", validation_alias="LOG_LEVEL")
-    api_prefix: str = Field(default="/api", validation_alias="API_PREFIX")
+    log_level: str = Field(
+        default="INFO",
+        validation_alias=AliasChoices("AGENT_LOG_LEVEL", "LOG_LEVEL"),
+    )
+    api_prefix: str = Field(
+        default="/api",
+        validation_alias=AliasChoices("AGENT_API_PREFIX", "API_PREFIX"),
+    )
     cors_origins: list[str] = Field(
         default=["http://localhost:5173"],
         validation_alias="CORS_ORIGINS",
@@ -25,7 +34,7 @@ class Settings(BaseSettings):
     app_port: int = Field(default=8000, validation_alias="APP_PORT")
     control_hub_base_url: str = Field(
         default="https://control.woodhost.cloud/api",
-        validation_alias="CONTROL_HUB_BASE_URL",
+        validation_alias=AliasChoices("AGENT_CONTROL_HUB_BASE_URL", "CONTROL_HUB_BASE_URL"),
     )
     control_hub_timeout_seconds: float = Field(
         default=15.0,
@@ -33,15 +42,18 @@ class Settings(BaseSettings):
     )
     rag_ingestion_base_url: str = Field(
         default="http://localhost:8080",
-        validation_alias="RAG_INGESTION_BASE_URL",
+        validation_alias=AliasChoices("AGENT_RAG_INGESTION_BASE_URL", "RAG_INGESTION_BASE_URL"),
     )
     rag_ingestion_timeout_seconds: float = Field(
         default=15.0,
-        validation_alias="RAG_INGESTION_TIMEOUT_SECONDS",
+        validation_alias=AliasChoices(
+            "AGENT_RAG_INGESTION_TIMEOUT_SECONDS",
+            "RAG_INGESTION_TIMEOUT_SECONDS",
+        ),
     )
     rag_ingestion_enabled: bool = Field(
         default=False,
-        validation_alias="RAG_INGESTION_ENABLED",
+        validation_alias=AliasChoices("AGENT_RAG_INGESTION_ENABLED", "RAG_INGESTION_ENABLED"),
     )
     orchestration_default_provider: str = Field(
         default="codex",
@@ -99,34 +111,53 @@ class Settings(BaseSettings):
     )
     default_execution_target: str | None = Field(
         default=None,
-        validation_alias="DEFAULT_EXECUTION_TARGET",
+        validation_alias=AliasChoices("AGENT_DEFAULT_EXECUTION_TARGET", "DEFAULT_EXECUTION_TARGET"),
     )
     worker_secret_refs: dict[str, str] = Field(
         default_factory=dict,
-        validation_alias="WORKER_SECRET_REFS",
+        validation_alias=AliasChoices("AGENT_WORKER_SECRET_REFS", "WORKER_SECRET_REFS"),
     )
     remote_execution_poll_interval_seconds: float = Field(
         default=2.0,
-        validation_alias="REMOTE_EXECUTION_POLL_INTERVAL_SECONDS",
+        validation_alias=AliasChoices(
+            "AGENT_REMOTE_EXECUTION_POLL_INTERVAL_SECONDS",
+            "REMOTE_EXECUTION_POLL_INTERVAL_SECONDS",
+        ),
     )
     remote_execution_wait_timeout_seconds: float = Field(
         default=900.0,
-        validation_alias="REMOTE_EXECUTION_WAIT_TIMEOUT_SECONDS",
+        validation_alias=AliasChoices(
+            "AGENT_REMOTE_EXECUTION_WAIT_TIMEOUT_SECONDS",
+            "REMOTE_EXECUTION_WAIT_TIMEOUT_SECONDS",
+        ),
     )
     remote_execution_online_threshold_seconds: float = Field(
         default=30.0,
-        validation_alias="REMOTE_EXECUTION_ONLINE_THRESHOLD_SECONDS",
+        validation_alias=AliasChoices(
+            "AGENT_REMOTE_EXECUTION_ONLINE_THRESHOLD_SECONDS",
+            "REMOTE_EXECUTION_ONLINE_THRESHOLD_SECONDS",
+        ),
     )
 
-    postgres_host: str
-    postgres_port: int
-    postgres_db: str
+    postgres_host: str = Field(
+        validation_alias=AliasChoices("AGENT_POSTGRES_HOST", "POSTGRES_HOST")
+    )
+    postgres_port: int = Field(
+        validation_alias=AliasChoices("AGENT_POSTGRES_PORT", "POSTGRES_PORT")
+    )
+    postgres_db: str = Field(validation_alias=AliasChoices("AGENT_POSTGRES_DB", "POSTGRES_DB"))
 
-    pg_admin_user: str
-    pg_admin_password: str
+    pg_admin_user: str = Field(
+        validation_alias=AliasChoices("AGENT_PG_ADMIN_USER", "PG_ADMIN_USER")
+    )
+    pg_admin_password: str = Field(
+        validation_alias=AliasChoices("AGENT_PG_ADMIN_PASSWORD", "PG_ADMIN_PASSWORD")
+    )
 
-    app_db_user: str
-    app_db_password: str
+    app_db_user: str = Field(validation_alias=AliasChoices("AGENT_APP_DB_USER", "APP_DB_USER"))
+    app_db_password: str = Field(
+        validation_alias=AliasChoices("AGENT_APP_DB_PASSWORD", "APP_DB_PASSWORD")
+    )
 
     @computed_field
     @property

@@ -1,6 +1,6 @@
 # Agent Service
 
-FastAPI-based agent control plane with generic interaction APIs, execution target routing, remote worker support, and a built-in admin frontend served from the same container.
+FastAPI-based agent control plane with execution target routing, remote worker support, OpenCode-backed task execution, and a built-in admin frontend served from the same container.
 
 ## Local development
 
@@ -41,11 +41,9 @@ Deployment settings:
 - `AGENT_SERVICE_IMAGE` for the deployed image. Default: `ghcr.io/spencerrwood/agent-service:latest`
 - `AGENT_SERVICE_BIND_HOST` for the host bind address in Docker Compose. Default: `127.0.0.1`
 - `AGENT_SERVICE_HOST_PORT` for the single published Docker Compose port. Default: `8080`
-- `CODEX_COMMAND` and `COPILOT_CLI_COMMAND` for the worker adapter commands
+- `OPENCODE_COMMAND` for the worker-side OpenCode command
+- `OPENCODE_DRY_RUN` to keep OpenCode execution synthetic during local development
 - `GIT_PROVIDER_NAME`, `GITHUB_OWNER`, `GITHUB_TOKEN`, `GITHUB_API_BASE_URL`, and `GITHUB_WEBHOOK_SECRET` for GitHub PR sync and webhook verification
-- `ORCHESTRATION_DRY_RUN` to keep provider execution synthetic during local development
-- `ORCHESTRATION_PROVIDER_FALLBACK_ENABLED` to retry with a secondary provider if the primary one fails
-- `AGENT_CONFIG_PATH` for the per-agent YAML configuration file. Default: `config/agents.yaml`
 - `RAG_INGESTION_ENABLED`, `RAG_INGESTION_BASE_URL`, and `RAG_INGESTION_TIMEOUT_SECONDS` for the ingestion client
 - `DEFAULT_EXECUTION_TARGET` for the preferred remote execution target
 - `WORKER_SECRET_REFS` for worker target secret references encoded as a JSON object
@@ -97,22 +95,33 @@ Check the container status:
 Check the web entrypoint:
 `curl -i http://localhost:${AGENT_SERVICE_HOST_PORT:-8080}/`
 
-## Generic Interaction API
+## Architecture
 
-The generic chat-client surface is mounted at:
-- `/api/interaction`
-- `/api/interaction/openapi.json`
-- `/api/interaction/docs`
+The current execution path is:
 
-Core endpoints:
-- `POST /api/interaction/requests`
-- `GET /api/interaction/requests/{run_id}`
-- `POST /api/interaction/requests/{run_id}/approve`
-- `POST /api/interaction/requests/{run_id}/reject`
-- `POST /api/interaction/requests/{run_id}/reconcile`
-- `POST /api/interaction/requests/{run_id}/pull-request-events`
+`OpenWebUI -> Agent-Services Broker -> Worker Node -> OpenCode -> backend selected inside OpenCode`
 
-Open WebUI or any other client should connect to the generic interaction OpenAPI document rather than a product-specific route.
+Key responsibilities:
+- OpenWebUI is the human-facing chat, approval, and progress surface.
+- Agent Service is the broker and control plane. It normalizes requests into task envelopes, selects a worker target, queues work, and streams progress/results.
+- Worker nodes own repo-local execution context and invoke OpenCode as the only execution gateway.
+- OpenCode performs backend/model routing to Codex, Copilot, or a local LLM.
+
+All execution goes through OpenCode. There are no direct Codex CLI or Copilot CLI execution paths outside it.
+
+## Agent Tasks API
+
+The brokered task API is mounted at:
+- `POST /api/agent-tasks/`
+- `GET /api/agent-tasks/{task_id}`
+- `GET /api/agent-tasks/{task_id}/stream`
+
+Worker callbacks are mounted at:
+- `POST /api/worker/agent-tasks/{task_id}/progress`
+- `POST /api/worker/agent-tasks/{task_id}/artifacts`
+- `POST /api/worker/agent-tasks/{task_id}/deferred`
+
+The SSE stream at `GET /api/agent-tasks/{task_id}/stream` is the main client-facing progress feed.
 
 ## Execution Targets and Workers
 
@@ -131,6 +140,7 @@ Worker API:
 - `POST /api/worker/execution-targets/{target_id}/jobs/claim`
 - `POST /api/worker/execution-targets/{target_id}/jobs/{job_id}/complete`
 - `POST /api/worker/execution-targets/{target_id}/jobs/{job_id}/fail`
+- `POST /api/worker/execution-targets/{target_id}/jobs/{job_id}/requeue`
 
 The included lightweight worker script is:
 `scripts/run_worker_agent.py`
@@ -144,125 +154,153 @@ The launchd template lives at:
 Dashy-friendly worker health can be read from:
 `GET /api/admin/execution-targets/<target_id>/health`
 
-## Control Hub Bridge
+## End-To-End Smoke Test
 
-This service exposes orchestration endpoints for direct API use and a thin Control Hub chat bridge.
+This is the simplest full-path validation:
 
-Control Hub is the source of truth for API behavior. This repo validates approval request and response payloads with local Pydantic models instead of requiring a checked-in OpenAPI contract file at runtime.
+`client -> Agent Service -> worker node -> OpenCode -> Codex`
 
-### Start the service
+It proves:
+- broker intake and task envelope creation
+- worker dispatch and job claim
+- worker-side preflight
+- OpenCode-only execution routing
+- progress streaming
+- final artifact/result reporting
 
-Run migrations and start the backend:
-
-```sh
-python scripts/bootstrap_db.py
-cd backend
-uv run uvicorn app.main:app --reload
-```
-
-### Core orchestration API
-
-Create a run directly:
+### 1. Register or update a worker target
 
 ```sh
-curl -X POST http://localhost:8000/api/orchestration/runs/ \
+curl -sS -X POST https://agents.woodhost.cloud/api/admin/execution-targets/ \
   -H 'Content-Type: application/json' \
   -d '{
-    "user_prompt": "Add audit logging to the orchestration flow",
-    "repo": "agent-service",
-    "project": {
-      "project_slug": "control-hub",
-      "project_path": "apps/control-hub"
+    "id": "worker-b",
+    "display_name": "Worker B",
+    "executor_type": "worker_agent",
+    "host": "worker-b.internal",
+    "port": 22,
+    "user_name": "agent",
+    "repo_root": "/Users/spencerwood/Documents/Projects/agent-service",
+    "labels": ["worker", "mac"],
+    "supported_tools": ["agent.run_task"],
+    "metadata": {
+      "route_profile": "implementation",
+      "managed_by": "manual_test"
     },
-    "worker_target": "worker_b"
-  }'
+    "secret_ref": "worker-b-token",
+    "enabled": true,
+    "is_default": true
+  }' | jq
 ```
 
-Reconcile a run after the approval item is approved in Control Hub:
+If an old default worker should no longer receive tasks, disable it:
 
 ```sh
-curl -X POST http://localhost:8000/api/orchestration/runs/<run_id>/reconcile
-```
-
-Mark a pull request approved:
-
-```sh
-curl -X POST http://localhost:8000/api/orchestration/runs/<run_id>/pull-request-events \
+curl -sS -X PATCH https://agents.woodhost.cloud/api/admin/execution-targets/mbp-primary \
   -H 'Content-Type: application/json' \
   -d '{
-    "status": "approved",
-    "approved_by": ["reviewer"]
-  }'
+    "enabled": false,
+    "is_default": false
+  }' | jq
 ```
 
-Mark a pull request merged:
+### 2. Start the worker
+
+Run the worker from the repo root with the backend virtual environment:
 
 ```sh
-curl -X POST http://localhost:8000/api/orchestration/runs/<run_id>/pull-request-events \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "status": "merged"
-  }'
+UV_CACHE_DIR=/tmp/uv-cache uv run --project backend python scripts/run_worker_agent.py \
+  --server-base-url https://agents.woodhost.cloud \
+  --target-id worker-b \
+  --worker-id worker-b-1 \
+  --worker-token <worker-token> \
+  --opencode-command opencode
 ```
 
-### Control Hub chat bridge
-
-Use this when Control Hub chat or a plugin needs to create and monitor orchestration runs without depending on the raw run API contract.
-
-Create a run from Control Hub chat context:
+Check worker health in another terminal:
 
 ```sh
-curl -X POST http://localhost:8000/api/orchestration/tools/control-hub-chat/run \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "prompt": "Add audit logging to the orchestration flow",
-    "context": {
-      "conversation_id": "conv-1",
-      "message_id": "msg-1",
-      "user_id": "user-1",
-      "username": "spencer",
+curl -sS https://agents.woodhost.cloud/api/admin/execution-targets/worker-b/health | jq
+```
+
+Expected:
+- `online: true`
+- `last_seen_at` populated
+
+### 3. Create a task and stream it
+
+This example pins the task to `worker-b`, requests `codex` behind OpenCode, and streams progress live:
+
+```sh
+TASK_ID=$(
+  curl -sS https://agents.woodhost.cloud/api/agent-tasks/ \
+    -H 'Content-Type: application/json' \
+    -d '{
+      "target_id": "worker-b",
+      "task_class": "inspect_repo",
+      "prompt": "Answer briefly: what API path streams agent task progress to clients?",
       "repo": "agent-service",
-      "project": {
-        "project_slug": "control-hub",
-        "project_path": "apps/control-hub"
-      },
-      "worker_target": "worker_b",
-      "requested_by": "control-hub-chat",
-      "assigned_to": null,
-      "labels": ["control-hub", "chat"],
-      "extra": {
-        "source": "control_hub"
-      }
-    }
-  }'
+      "allowed_backends": ["codex"],
+      "backend": "codex",
+      "return_artifacts": ["summary"],
+      "wait_for_completion": false
+    }' | jq -r '.task.task_id'
+)
+
+echo "$TASK_ID"
+curl -N "https://agents.woodhost.cloud/api/agent-tasks/$TASK_ID/stream"
 ```
 
-Read run status for chat display:
+Example stream output:
+
+```text
+4c346db0-1faa-49d0-b03f-ef214ee9cdc8
+event: progress
+data: {"type": "agent.task.created", "payload": {"state": "queued", "task_class": "inspect_repo", "normalized_goal": "Answer briefly: what API path streams agent task progress to clients?", "preferred_backend": "codex", "allowed_backends": ["codex"], "execution_mode": "opencode", "dispatch_target": "worker-b", "dispatch_reason": "opencode selected worker 'worker-b' for inspect_repo."}}
+
+event: progress
+data: {"type": "agent.task.worker.claimed", "payload": {"message": "Worker claimed inspect_repo.", "state": "queued", "worker_id": "Spencers-MacBook-Pro.local", "preferred_backend": "codex"}}
+
+event: progress
+data: {"type": "agent.task.routing.resolved", "payload": {"message": "opencode selected worker worker-b with preferred backend codex.", "state": "queued", "execution_mode": "opencode", "dispatch_target": "worker-b", "preferred_backend": "codex", "allowed_backends": ["codex"]}}
+
+event: progress
+data: {"type": "agent.task.state_changed", "payload": {"message": "Running backend availability checks.", "state": "preflight_check", "preferred_backend": "codex", "allowed_backends": ["codex"]}}
+
+event: progress
+data: {"type": "agent.task.preflight.checked", "payload": {"message": "Preflight checked codex.", "state": null, "backend": "codex", "available": true, "reason_code": "codex_available", "retry_after": null}}
+
+event: progress
+data: {"type": "agent.task.state_changed", "payload": {"message": "codex is ready to run through OpenCode.", "state": "ready_to_run", "backend": "codex", "reason_codes": ["task_class_match", "codex_available"]}}
+
+event: progress
+data: {"type": "agent.task.state_changed", "payload": {"message": "Executing with OpenCode on codex.", "state": "running", "backend": "codex"}}
+
+event: progress
+data: {"type": "agent.task.artifact.created", "payload": {"artifact_type": "execution_result", "title": "Task Result", "status": "completed"}}
+
+event: progress
+data: {"type": "agent.task.finished", "payload": {"message": "OpenCode routed inspect_repo to codex in dry-run mode for agent-service.", "state": "completed", "backend": "codex", "reason_code": null, "retry_after": null}}
+
+event: artifact
+data: {"type": "execution_result", "title": "Task Result"}
+
+event: terminal
+data: {"status": "completed", "task_id": "4c346db0-1faa-49d0-b03f-ef214ee9cdc8"}
+```
+
+### 4. Read the final task record
 
 ```sh
-curl http://localhost:8000/api/orchestration/tools/control-hub-chat/run/<run_id>
+curl -sS "https://agents.woodhost.cloud/api/agent-tasks/$TASK_ID" | jq
 ```
 
-Expected workflow:
-- Control Hub chat creates the run through the bridge endpoint.
-- This service creates the Control Hub approval item and stores run state in Postgres.
-- After approval, reconcile advances the run and Worker B opens a PR.
-- After PR approval, Agent C stages provisional docs and knowledge artifacts.
-- After PR merge, provisional knowledge is promoted.
+Look for:
+- `state: "completed"`
+- `result.backend: "codex"`
+- `result.execution_mode: "opencode"`
 
-Execution contracts now carry optional project context and a worker target from run creation through the approved work package. That gives later provider, artifact, and RAG work a stable project-scoped contract to build on.
-
-Worker targeting is now operational:
-- `worker_b` executes the approved work package through the provider adapter and opens a PR
-- `agent_c` generates and stages the artifact package directly without opening a PR
-- `auto` resolves to `agent_c` for artifact, docs, knowledge, and RAG-oriented prompts, otherwise `worker_b`
-
-Artifact generation now stages a structured package in `knowledge_artifact_json` with:
-- a manifest containing repo, project, provider, worker target, PR source, and stage metadata
-- generated markdown documents for implementation summary and operational notes
-- promotion history that records when an artifact is generated, promoted, or marked stale
-
-That means later ingestion work can consume explicit staged documents and metadata instead of deriving them from a flat summary blob.
+If OpenCode is in dry-run mode, the result summary will explicitly say so.
 
 ## RAG Ingestion
 
@@ -273,11 +311,17 @@ The service now includes a dedicated RAG ingestion client. When `RAG_INGESTION_E
 
 The current RAG service does not expose artifact lifecycle routes, so only provisional staging is remote today. Promotion and stale transitions are recorded locally in `knowledge_artifact_json` and appended as `rag_*` receipt events in `promotion_history`.
 
-## Provider adapter contract
+## OpenCode Execution
 
-When `ORCHESTRATION_DRY_RUN=false`, the service treats `CODEX_COMMAND` and `COPILOT_CLI_COMMAND` as adapter commands. It sends the approved work package JSON to the command on `stdin` and expects a JSON object on `stdout` shaped like `WorkerExecutionResult`.
+Worker nodes always execute through OpenCode.
 
-That keeps the FastAPI orchestration layer decoupled from the exact CLI or agent runtime used underneath while still giving the service a stable execution boundary and optional provider fallback behavior.
+Routing guidance:
+- `classify_only`, `plan_only`, `summarize` -> local LLM
+- `inspect_repo` -> local LLM or lightweight model
+- `implement`, `debug`, `review` -> Codex when available
+- fallback -> Copilot
+
+OpenCode performs the backend-specific execution. The agent service and worker never call Codex CLI or Copilot CLI directly.
 
 ## GitHub PR Sync
 
@@ -298,18 +342,6 @@ Supported webhook events today:
 - `pull_request_review`
 
 If `GITHUB_WEBHOOK_SECRET` is set, the endpoint verifies `X-Hub-Signature-256` before processing the payload.
-
-## Agent Configuration
-
-Per-agent configuration now lives in [config/agents.yaml](/Users/spencerwood/Documents/Projects/agent-service/config/agents.yaml).
-
-The file currently supports:
-- `agents.agent_a` for planner defaults like `requested_by`
-- `agents.worker_b` for executor defaults like `assigned_to`, `worker_target`, and `default_provider`
-- `agents.agent_c` for artifact-generation behavior and future ingestion ownership
-- `providers.<name>` for `enabled`, adapter command, and `dry_run` behavior per provider
-
-Environment variables still work, but the YAML file is now the main place to define each individual agent.
 
 ## Migrations and provisioning
 
