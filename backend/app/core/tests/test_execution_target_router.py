@@ -26,6 +26,7 @@ class FakeExecutionTargetService:
             secret_ref=request.secret_ref,
             enabled=request.enabled,
             is_default=request.is_default,
+            archived_at=None,
             last_seen_at=None,
             created_at="2026-04-10T00:00:00Z",
             updated_at="2026-04-10T00:00:00Z",
@@ -47,6 +48,7 @@ class FakeExecutionTargetService:
                 secret_ref="worker-token",
                 enabled=True,
                 is_default=True,
+                archived_at=None,
                 last_seen_at=None,
                 created_at="2026-04-10T00:00:00Z",
                 updated_at="2026-04-10T00:00:00Z",
@@ -68,6 +70,10 @@ class FakeExecutionTargetService:
     async def list_jobs(self, target_id=None, limit=50):
         del target_id, limit
         return ExecutionJobListResponse(items=[])
+
+    async def delete_target(self, target_id):
+        assert target_id == "worker-b"
+        return None
 
 
 def build_client() -> TestClient:
@@ -128,3 +134,12 @@ def test_execution_target_health_route_returns_worker_status():
     payload = response.json()
     assert payload["target_id"] == "worker-b"
     assert payload["supported_tools"] == ["agent.run_task"]
+
+
+def test_delete_execution_target_returns_no_content():
+    client = build_client()
+
+    response = client.delete("/api/admin/execution-targets/worker-b")
+
+    assert response.status_code == 204
+    assert response.text == ""

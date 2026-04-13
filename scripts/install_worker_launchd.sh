@@ -11,15 +11,29 @@ SERVER_BASE_URL="$2"
 TARGET_ID="$3"
 WORKER_TOKEN="$4"
 WORKER_ID="${5:-${TARGET_ID}-worker}"
+UV_BIN="${UV_BIN:-$(command -v uv)}"
+OPENCODE_BIN="${OPENCODE_BIN:-$(command -v opencode)}"
 
 PLIST_TEMPLATE="$REPO_ROOT/deploy/macos/com.woodhost.agent-worker.plist"
 PLIST_DEST="$HOME/Library/LaunchAgents/com.woodhost.agent-worker.plist"
+
+if [ -z "$UV_BIN" ]; then
+  echo "uv not found in PATH"
+  exit 1
+fi
+
+if [ -z "$OPENCODE_BIN" ]; then
+  echo "opencode not found in PATH"
+  exit 1
+fi
 
 mkdir -p "$HOME/Library/LaunchAgents"
 mkdir -p "$REPO_ROOT/.worker"
 
 sed \
   -e "s|__REPO_ROOT__|$REPO_ROOT|g" \
+  -e "s|__UV_BIN__|$UV_BIN|g" \
+  -e "s|__OPENCODE_BIN__|$OPENCODE_BIN|g" \
   -e "s|https://agents.woodhost.cloud|$SERVER_BASE_URL|g" \
   -e "s|mbp-primary|$TARGET_ID|g" \
   -e "s|mbp-primary-worker|$WORKER_ID|g" \

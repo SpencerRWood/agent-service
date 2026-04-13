@@ -22,15 +22,18 @@ class ExecutionTargetRepository:
 
     async def list_targets(self) -> list[ExecutionTarget]:
         result = await self._session.execute(
-            select(ExecutionTarget).order_by(
-                ExecutionTarget.is_default.desc(), ExecutionTarget.id.asc()
-            )
+            select(ExecutionTarget)
+            .where(ExecutionTarget.archived_at.is_(None))
+            .order_by(ExecutionTarget.is_default.desc(), ExecutionTarget.id.asc())
         )
         return list(result.scalars().all())
 
     async def list_enabled_targets_for_tool(self, tool_name: str) -> list[ExecutionTarget]:
         result = await self._session.execute(
-            select(ExecutionTarget).where(ExecutionTarget.enabled.is_(True))
+            select(ExecutionTarget).where(
+                ExecutionTarget.enabled.is_(True),
+                ExecutionTarget.archived_at.is_(None),
+            )
         )
         return [
             target
@@ -38,8 +41,18 @@ class ExecutionTargetRepository:
             if _supports_tool(target.supported_tools_json or [], tool_name)
         ]
 
-    async def get_target(self, target_id: str) -> ExecutionTarget | None:
-        return await self._session.get(ExecutionTarget, target_id)
+    async def get_target(
+        self,
+        target_id: str,
+        *,
+        include_archived: bool = False,
+    ) -> ExecutionTarget | None:
+        target = await self._session.get(ExecutionTarget, target_id)
+        if target is None:
+            return None
+        if not include_archived and target.archived_at is not None:
+            return None
+        return target
 
     async def update_target(self, target: ExecutionTarget) -> ExecutionTarget:
         if target.is_default:
@@ -48,10 +61,20 @@ class ExecutionTargetRepository:
         await self._session.refresh(target)
         return target
 
+    async def archive_target(self, target: ExecutionTarget) -> ExecutionTarget:
+        target.enabled = False
+        target.is_default = False
+        target.archived_at = datetime.now(UTC)
+        target.last_seen_at = None
+        await self._session.commit()
+        await self._session.refresh(target)
+        return target
+
     async def get_default_target(self, tool_name: str | None = None) -> ExecutionTarget | None:
         stmt = select(ExecutionTarget).where(
             ExecutionTarget.enabled.is_(True),
             ExecutionTarget.is_default.is_(True),
+            ExecutionTarget.archived_at.is_(None),
         )
         result = await self._session.execute(stmt)
         target = result.scalar_one_or_none()
@@ -171,7 +194,10 @@ class ExecutionTargetRepository:
 
     async def _clear_default_target(self, except_target_id: str | None = None) -> None:
         result = await self._session.execute(
-            select(ExecutionTarget).where(ExecutionTarget.is_default.is_(True))
+            select(ExecutionTarget).where(
+                ExecutionTarget.is_default.is_(True),
+                ExecutionTarget.archived_at.is_(None),
+            )
         )
         for target in result.scalars().all():
             if except_target_id is not None and target.id == except_target_id:

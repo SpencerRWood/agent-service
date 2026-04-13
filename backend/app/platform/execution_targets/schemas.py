@@ -52,6 +52,7 @@ class ExecutionTargetRead(BaseModel):
     secret_ref: str | None = None
     enabled: bool
     is_default: bool
+    archived_at: datetime | None = None
     last_seen_at: datetime | None = None
     created_at: datetime
     updated_at: datetime

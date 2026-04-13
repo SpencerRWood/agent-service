@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Header
+from fastapi import APIRouter, Depends, Header, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db.session import get_db
@@ -50,6 +50,15 @@ async def update_execution_target(
     service: ExecutionTargetService = Depends(get_execution_target_service),
 ) -> ExecutionTargetRead:
     return await service.update_target(target_id, request)
+
+
+@router.delete("/{target_id}", status_code=204)
+async def delete_execution_target(
+    target_id: str,
+    service: ExecutionTargetService = Depends(get_execution_target_service),
+) -> Response:
+    await service.delete_target(target_id)
+    return Response(status_code=204)
 
 
 @router.get("/{target_id}/health", response_model=ExecutionTargetHealthRead)

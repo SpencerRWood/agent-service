@@ -16,6 +16,7 @@ def build_target(
         executor_type="worker_agent",
         enabled=True,
         is_default=is_default,
+        archived_at=None,
         labels_json=labels or [],
         supported_tools_json=supported_tools or ["agent.run_task"],
         metadata_json={"target_kind": target_kind},
