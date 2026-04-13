@@ -72,6 +72,10 @@ class ExecutionTargetService:
         updated = await self._repository.update_target(target)
         return ExecutionTargetRead.model_validate(updated)
 
+    async def delete_target(self, target_id: str) -> None:
+        target = await self._require_target(target_id)
+        await self._repository.archive_target(target)
+
     async def get_target_health(self, target_id: str) -> ExecutionTargetHealthRead:
         target = await self._require_target(target_id)
         return ExecutionTargetHealthRead(

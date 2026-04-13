@@ -7,8 +7,7 @@
 
     <key>ProgramArguments</key>
     <array>
-      <string>/usr/bin/env</string>
-      <string>uv</string>
+      <string>__UV_BIN__</string>
       <string>run</string>
       <string>../scripts/run_worker_agent.py</string>
       <string>--server-base-url</string>
@@ -19,12 +18,10 @@
       <string>mbp-primary-worker</string>
       <string>--worker-token</string>
       <string>__WORKER_TOKEN__</string>
-      <string>--codex-command</string>
-      <string>codex</string>
-      <string>--copilot-command</string>
-      <string>copilot</string>
+      <string>--opencode-command</string>
+      <string>__OPENCODE_BIN__</string>
       <string>--supported-tools</string>
-      <string>*</string>
+      <string>agent.run_task</string>
       <string>--stdout-log-path</string>
       <string>__REPO_ROOT__/.worker/agent-worker.out.log</string>
       <string>--stderr-log-path</string>

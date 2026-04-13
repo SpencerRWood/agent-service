@@ -14,6 +14,7 @@ def build_target(*, enabled: bool = True, seconds_ago: float | None = None) -> E
         executor_type="worker_agent",
         enabled=enabled,
         is_default=False,
+        archived_at=None,
         labels_json=[],
         supported_tools_json=["agent.run_task"],
         metadata_json={},
