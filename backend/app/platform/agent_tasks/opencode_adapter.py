@@ -167,6 +167,17 @@ def _parse_json_lines(stdout: str) -> list[dict[str, Any]]:
 
 
 def _extract_text_from_events(events: list[dict[str, Any]]) -> str | None:
+    explicit_texts: list[str] = []
+    for event in events:
+        if event.get("type") == "text":
+            part = event.get("part")
+            if isinstance(part, dict):
+                text = part.get("text")
+                if isinstance(text, str) and text.strip():
+                    explicit_texts.append(text.strip())
+    if explicit_texts:
+        return explicit_texts[-1]
+
     strings: list[str] = []
     for event in events:
         _collect_strings(event, strings)
