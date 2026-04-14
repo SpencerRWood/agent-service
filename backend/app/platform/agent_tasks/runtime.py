@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import json
-import shlex
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -11,6 +9,7 @@ from typing import Protocol
 from app.core.settings import settings
 from app.integrations.providers.runner import CommandRunner, SubprocessCommandRunner
 from app.platform.agent_tasks.contracts import ExecutorWorkPackage, ProjectContext
+from app.platform.agent_tasks.opencode_adapter import OpenCodeCLIAdapter
 from app.platform.agent_tasks.schemas import (
     AgentTaskEnvelope,
     AgentTaskResult,
@@ -67,6 +66,7 @@ class OpenCodeExecutor:
         self._command = command or settings.opencode_command
         self._dry_run = settings.opencode_dry_run if dry_run is None else dry_run
         self._runner = runner or SubprocessCommandRunner()
+        self._adapter = OpenCodeCLIAdapter(command=self._command, runner=self._runner)
 
     async def execute(
         self,
@@ -120,23 +120,19 @@ class OpenCodeExecutor:
         if self._dry_run:
             return self._build_dry_run_result(envelope, preflight)
 
-        argv = shlex.split(self._command)
-        if not argv:
-            raise OpenCodeRoutingError("OpenCode command is not configured.")
-        command_result = await self._runner.run(
-            argv,
-            stdin=self._build_work_package(envelope, preflight.backend).model_dump_json(),
-        )
-        if command_result.exit_code != 0:
+        try:
+            payload = await self._adapter.execute(
+                work_package=self._build_work_package(envelope, preflight.backend),
+                backend=preflight.backend,
+            )
+        except OpenCodeRoutingError:
+            raise
+        except Exception as exc:
             return self._build_rate_limited_or_error_result(
                 envelope=envelope,
                 backend=preflight.backend,
-                stderr=command_result.stderr.strip() or command_result.stdout.strip(),
+                stderr=str(exc),
             )
-        try:
-            payload = json.loads(command_result.stdout)
-        except json.JSONDecodeError as exc:
-            raise OpenCodeRoutingError("OpenCode command returned invalid JSON.") from exc
         if not isinstance(payload, dict):
             raise OpenCodeRoutingError("OpenCode command returned a non-object JSON payload.")
         if payload.get("status") in {"rate_limited", "deferred_until_reset"}:
@@ -291,45 +287,24 @@ class OpenCodeExecutor:
                 reason_code=_availability_reason_code(backend, available=True),
             )
 
-        argv = shlex.split(self._command)
-        if not argv:
-            raise OpenCodeRoutingError("OpenCode command is not configured.")
-        command_result = await self._runner.run(
-            [*argv, "preflight"],
-            stdin=json.dumps(
-                {
-                    "backend": backend.value,
-                    "task_id": envelope.task_id,
-                    "task_class": envelope.task_class.value,
-                    "repo": envelope.target_repo,
-                }
-            ),
+        preflight = await self._adapter.preflight(
+            backend=backend,
+            task_id=envelope.task_id,
+            task_class=envelope.task_class.value,
+            repo=envelope.target_repo,
         )
-        if command_result.exit_code != 0:
+        if not preflight.available:
             return PreflightStatus(
                 backend=backend,
                 available=False,
-                reason_code=_availability_reason_code(backend, available=False),
-                retry_after=datetime.now(UTC) + timedelta(minutes=15),
+                reason_code=preflight.reason_code,
+                retry_after=preflight.retry_after,
             )
-        try:
-            payload = json.loads(command_result.stdout)
-        except json.JSONDecodeError as exc:
-            raise OpenCodeRoutingError("OpenCode preflight returned invalid JSON.") from exc
-        if not isinstance(payload, dict):
-            raise OpenCodeRoutingError("OpenCode preflight returned a non-object JSON payload.")
         return PreflightStatus(
             backend=backend,
-            available=bool(payload.get("available", False)),
-            reason_code=ReasonCode(
-                str(
-                    payload.get("reason_code")
-                    or _availability_reason_code(
-                        backend, available=bool(payload.get("available", False))
-                    ).value
-                )
-            ),
-            retry_after=_coerce_datetime(payload.get("retry_after") or payload.get("reset_at")),
+            available=True,
+            reason_code=preflight.reason_code,
+            retry_after=preflight.retry_after,
         )
 
     def _build_dry_run_result(

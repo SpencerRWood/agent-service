@@ -89,6 +89,10 @@ class Settings(BaseSettings):
     )
     opencode_command: str = Field(default="opencode", validation_alias="OPENCODE_COMMAND")
     opencode_dry_run: bool = Field(default=True, validation_alias="OPENCODE_DRY_RUN")
+    opencode_backend_models: dict[str, str] = Field(
+        default_factory=dict,
+        validation_alias="OPENCODE_BACKEND_MODELS",
+    )
     git_provider_name: str = Field(
         default="github",
         validation_alias="GIT_PROVIDER_NAME",
@@ -236,6 +240,24 @@ class Settings(BaseSettings):
             raise ValueError("ORCHESTRATION_PROVIDER_REPO_OVERRIDES must be a JSON object")
 
         return {str(repo): str(provider) for repo, provider in loaded.items()}
+
+    @field_validator("opencode_backend_models", mode="before")
+    @classmethod
+    def parse_opencode_backend_models(
+        cls,
+        value: str | dict[str, str] | None,
+    ) -> dict[str, str]:
+        if value in (None, ""):
+            return {}
+
+        if isinstance(value, dict):
+            return {str(key): str(model) for key, model in value.items()}
+
+        loaded = json.loads(value)
+        if not isinstance(loaded, dict):
+            raise ValueError("OPENCODE_BACKEND_MODELS must be a JSON object")
+
+        return {str(key): str(model) for key, model in loaded.items()}
 
     @field_validator("worker_secret_refs", mode="before")
     @classmethod

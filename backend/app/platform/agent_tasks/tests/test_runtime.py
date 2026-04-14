@@ -1,6 +1,7 @@
 import asyncio
 
 from app.platform.agent_tasks.runtime import (
+    OpenCodeExecutor,
     OpenCodeRuntime,
     classify_task,
     default_allowed_backends_for_task,
@@ -78,7 +79,7 @@ def test_task_classification_defaults_match_required_guidance():
 
 
 def test_opencode_runtime_executes_local_llm_task():
-    runtime = OpenCodeRuntime.from_settings()
+    runtime = OpenCodeRuntime(executor=OpenCodeExecutor(dry_run=True))
     reporter = RecordingReporter()
 
     result = asyncio.run(runtime.execute(build_envelope(), reporter))
@@ -89,7 +90,7 @@ def test_opencode_runtime_executes_local_llm_task():
 
 
 def test_opencode_runtime_dry_run_executes_coding_backend_through_opencode():
-    runtime = OpenCodeRuntime.from_settings()
+    runtime = OpenCodeRuntime(executor=OpenCodeExecutor(dry_run=True))
     reporter = RecordingReporter()
 
     result = asyncio.run(
@@ -108,7 +109,7 @@ def test_opencode_runtime_dry_run_executes_coding_backend_through_opencode():
 
 
 def test_opencode_runtime_honors_explicit_codex_for_inspect_repo():
-    runtime = OpenCodeRuntime.from_settings()
+    runtime = OpenCodeRuntime(executor=OpenCodeExecutor(dry_run=True))
     reporter = RecordingReporter()
 
     result = asyncio.run(
