@@ -169,12 +169,23 @@ class OpenCodeExecutor:
     def _select_backend(self, envelope: AgentTaskEnvelope) -> BackendSelection:
         preferred = envelope.preferred_backend or envelope.allowed_backends[0]
         if (
+            envelope.task_class == TaskClass.INSPECT_REPO
+            and preferred == BackendName.CODEX
+            and BackendName.CODEX in envelope.allowed_backends
+        ):
+            return BackendSelection(
+                backend=BackendName.CODEX,
+                reason_codes=[ReasonCode.TASK_CLASS_MATCH, ReasonCode.REPO_CONTEXT_REQUIRED],
+            )
+        if (
             envelope.task_class
             in {
                 TaskClass.CLASSIFY_ONLY,
+                TaskClass.ANSWER_QUESTION,
                 TaskClass.PLAN_ONLY,
                 TaskClass.SUMMARIZE,
                 TaskClass.INSPECT_REPO,
+                TaskClass.ANALYZE,
             }
             and BackendName.LOCAL_LLM in envelope.allowed_backends
         ):
@@ -182,7 +193,14 @@ class OpenCodeExecutor:
                 backend=BackendName.LOCAL_LLM,
                 reason_codes=[ReasonCode.TASK_CLASS_MATCH, ReasonCode.LOCAL_LLM_SUFFICIENT],
             )
-        if envelope.task_class in {TaskClass.IMPLEMENT, TaskClass.DEBUG, TaskClass.REVIEW}:
+        if envelope.task_class in {
+            TaskClass.IMPLEMENT,
+            TaskClass.REFACTOR,
+            TaskClass.DEBUG,
+            TaskClass.REVIEW,
+            TaskClass.TEST,
+            TaskClass.DOCUMENT,
+        }:
             if BackendName.CODEX in envelope.allowed_backends:
                 return BackendSelection(
                     backend=BackendName.CODEX,
@@ -483,8 +501,21 @@ class OpenCodeRuntime:
 
 def classify_task(prompt: str) -> TaskClass:
     lowered = prompt.lower()
+    if any(token in lowered for token in {"readme", "documentation", "document", "docs"}):
+        return TaskClass.DOCUMENT
+    if any(
+        token in lowered
+        for token in {"unit test", "integration test", "add tests", "write tests", "test "}
+    ):
+        return TaskClass.TEST
+    if "refactor" in lowered:
+        return TaskClass.REFACTOR
     if any(token in lowered for token in {"summarize", "summary"}):
         return TaskClass.SUMMARIZE
+    if any(
+        token in lowered for token in {"analyze", "analysis", "compare", "tradeoff", "explain why"}
+    ):
+        return TaskClass.ANALYZE
     if "plan" in lowered:
         return TaskClass.PLAN_ONLY
     if "classify" in lowered:
@@ -495,6 +526,10 @@ def classify_task(prompt: str) -> TaskClass:
         return TaskClass.DEBUG
     if "inspect" in lowered:
         return TaskClass.INSPECT_REPO
+    if lowered.rstrip().endswith("?") or lowered.startswith(
+        ("what ", "why ", "how ", "when ", "where ", "who ", "which ")
+    ):
+        return TaskClass.ANSWER_QUESTION
     return TaskClass.IMPLEMENT
 
 
@@ -505,9 +540,11 @@ def normalize_goal(prompt: str) -> str:
 def default_allowed_backends_for_task(task_class: TaskClass) -> list[BackendName]:
     if task_class in {
         TaskClass.CLASSIFY_ONLY,
+        TaskClass.ANSWER_QUESTION,
         TaskClass.PLAN_ONLY,
         TaskClass.SUMMARIZE,
         TaskClass.INSPECT_REPO,
+        TaskClass.ANALYZE,
     }:
         return [BackendName.LOCAL_LLM, BackendName.CODEX, BackendName.COPILOT_CLI]
     return [BackendName.CODEX, BackendName.COPILOT_CLI, BackendName.LOCAL_LLM]
@@ -516,9 +553,11 @@ def default_allowed_backends_for_task(task_class: TaskClass) -> list[BackendName
 def default_preferred_backend_for_task(task_class: TaskClass) -> BackendName:
     if task_class in {
         TaskClass.CLASSIFY_ONLY,
+        TaskClass.ANSWER_QUESTION,
         TaskClass.PLAN_ONLY,
         TaskClass.SUMMARIZE,
         TaskClass.INSPECT_REPO,
+        TaskClass.ANALYZE,
     }:
         return BackendName.LOCAL_LLM
     return BackendName.CODEX
@@ -527,9 +566,11 @@ def default_preferred_backend_for_task(task_class: TaskClass) -> BackendName:
 def available_route_profiles(task_class: TaskClass) -> Sequence[str]:
     if task_class in {
         TaskClass.CLASSIFY_ONLY,
+        TaskClass.ANSWER_QUESTION,
         TaskClass.PLAN_ONLY,
         TaskClass.SUMMARIZE,
         TaskClass.INSPECT_REPO,
+        TaskClass.ANALYZE,
     }:
         return ("cheap", "local")
     return ("implementation", "coding")
@@ -538,12 +579,22 @@ def available_route_profiles(task_class: TaskClass) -> Sequence[str]:
 def _acceptance_criteria_for_task(task_class: TaskClass) -> list[str]:
     if task_class == TaskClass.IMPLEMENT:
         return ["Requested implementation is completed and summarized."]
+    if task_class == TaskClass.REFACTOR:
+        return ["Requested refactor is completed without changing intended behavior."]
     if task_class == TaskClass.DEBUG:
         return ["Root cause is identified and a fix is proposed or applied."]
     if task_class == TaskClass.REVIEW:
         return ["Review findings are explicit and ordered by severity."]
+    if task_class == TaskClass.TEST:
+        return ["Relevant tests are added or updated and summarized."]
+    if task_class == TaskClass.DOCUMENT:
+        return ["Requested documentation is produced or updated clearly."]
     if task_class == TaskClass.INSPECT_REPO:
         return ["Repository structure and constraints are summarized."]
+    if task_class == TaskClass.ANALYZE:
+        return ["Tradeoffs and conclusions are summarized clearly."]
+    if task_class == TaskClass.ANSWER_QUESTION:
+        return ["The user question is answered directly and concisely."]
     return ["Task output is returned in a concise final artifact."]
 
 
