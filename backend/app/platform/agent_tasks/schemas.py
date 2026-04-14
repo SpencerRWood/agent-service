@@ -6,6 +6,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from app.platform.approvals.schemas import ApprovalDecisionRead, ApprovalRequestRead
 from app.platform.artifacts.schemas import ArtifactRead
 from app.platform.events.schemas import EventRead
 from app.platform.execution_targets.schemas import ExecutionJobRead
@@ -148,6 +149,8 @@ class AgentTaskRead(BaseModel):
     step: RunStepRead
     job: ExecutionJobRead | None = None
     events: list[EventRead] = Field(default_factory=list)
+    approvals: list[ApprovalRequestRead] = Field(default_factory=list)
+    approval_decisions: list[ApprovalDecisionRead] = Field(default_factory=list)
     artifacts: list[ArtifactRead] = Field(default_factory=list)
     result: AgentTaskResult | None = None
 

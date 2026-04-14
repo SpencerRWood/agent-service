@@ -36,6 +36,10 @@ class ApprovalService:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Approval not found")
         return ApprovalRequestRead.model_validate(approval)
 
+    async def list_for_run(self, run_id: str) -> list[ApprovalRequestRead]:
+        approvals = await self._repository.list_for_run(run_id)
+        return [ApprovalRequestRead.model_validate(approval) for approval in approvals]
+
     async def create_decision(
         self,
         approval_id: str,
@@ -62,3 +66,7 @@ class ApprovalService:
         )
         created = await self._repository.create_decision(decision)
         return ApprovalDecisionRead.model_validate(created)
+
+    async def list_decisions_for_run(self, run_id: str) -> list[ApprovalDecisionRead]:
+        decisions = await self._repository.list_decisions_for_run(run_id)
+        return [ApprovalDecisionRead.model_validate(decision) for decision in decisions]

@@ -82,3 +82,29 @@ def test_execute_parses_json_events_into_summary_and_artifact():
     assert argv[:4] == ["/bin/echo", "run", "--format", "json"]
     assert "--dir" in argv
     assert stdin is None
+
+
+def test_execute_prefers_explicit_text_parts_over_session_ids():
+    runner = FakeRunner(
+        [
+            CommandExecutionResult(
+                exit_code=0,
+                stdout=(
+                    '{"type":"step_start","sessionID":"ses_123","part":{"type":"step-start"}}\n'
+                    '{"type":"text","sessionID":"ses_123","part":{"type":"text","text":"adapter-ok"}}\n'
+                    '{"type":"step_finish","sessionID":"ses_123","part":{"type":"step-finish"}}\n'
+                ),
+                stderr="",
+            )
+        ]
+    )
+    adapter = OpenCodeCLIAdapter(command="/bin/echo", runner=runner)
+
+    payload = asyncio.run(
+        adapter.execute(
+            work_package=build_work_package(),
+            backend=BackendName.CODEX,
+        )
+    )
+
+    assert payload["summary"] == "adapter-ok"

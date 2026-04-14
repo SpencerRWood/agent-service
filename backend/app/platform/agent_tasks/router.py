@@ -16,6 +16,7 @@ from app.platform.agent_tasks.schemas import (
     AgentTaskRead,
 )
 from app.platform.agent_tasks.service import AgentTaskService, build_agent_task_service
+from app.platform.approvals.repository import ApprovalRepository
 from app.platform.artifacts.repository import ArtifactRepository
 from app.platform.artifacts.schemas import ArtifactCreate
 from app.platform.events.repository import EventRepository
@@ -31,6 +32,7 @@ def get_agent_task_service(db: AsyncSession = Depends(get_db)) -> AgentTaskServi
     return build_agent_task_service(
         run_repository=RunRepository(db),
         event_repository=EventRepository(db),
+        approval_repository=ApprovalRepository(db),
         artifact_repository=ArtifactRepository(db),
         execution_target_service=ExecutionTargetService(ExecutionTargetRepository(db)),
     )
@@ -59,6 +61,8 @@ async def stream_agent_task(
 ) -> StreamingResponse:
     async def event_stream():
         sent_event_ids: set[str] = set()
+        sent_approval_versions: set[str] = set()
+        sent_approval_decision_ids: set[str] = set()
         sent_artifact_ids: set[str] = set()
         while True:
             task = await service.get_task(task_id)
@@ -69,6 +73,25 @@ async def stream_agent_task(
                 yield (
                     "event: progress\n"
                     f"data: {json.dumps({'type': event.event_type, 'payload': event.payload_json})}\n\n"
+                )
+            for approval in task.approvals:
+                approval_version = f"{approval.id}:{approval.updated_at.isoformat()}"
+                if approval_version in sent_approval_versions:
+                    continue
+                sent_approval_versions.add(approval_version)
+                yield (
+                    "event: approval\n"
+                    "data: "
+                    f"{json.dumps({'type': 'approval_request', 'approval_id': approval.id, 'status': approval.status, 'target_type': approval.target_type, 'target_id': approval.target_id, 'reason': approval.reason, 'decision_type': approval.decision_type, 'policy_key': approval.policy_key, 'requested_decision': approval.request_payload_json, 'expires_at': approval.expires_at.isoformat() if approval.expires_at else None, 'updated_at': approval.updated_at.isoformat()})}\n\n"
+                )
+            for decision in task.approval_decisions:
+                if decision.id in sent_approval_decision_ids:
+                    continue
+                sent_approval_decision_ids.add(decision.id)
+                yield (
+                    "event: approval_decision\n"
+                    "data: "
+                    f"{json.dumps({'type': 'approval_decision', 'decision_id': decision.id, 'approval_id': decision.approval_request_id, 'decision': decision.decision, 'decided_by': decision.decided_by, 'comment': decision.comment, 'payload': decision.decision_payload_json, 'created_at': decision.created_at.isoformat()})}\n\n"
                 )
             for artifact in task.artifacts:
                 if artifact.id in sent_artifact_ids:
