@@ -7,6 +7,7 @@ from app.platform.agent_tasks.schemas import (
     TaskState,
 )
 from app.platform.agent_tasks.service import AgentTaskService
+from app.platform.approvals.schemas import ApprovalDecisionRead, ApprovalRequestRead
 from app.platform.artifacts.schemas import ArtifactRead
 from app.platform.events.schemas import EventRead
 from app.platform.execution_targets.schemas import ExecutionJobRead, ExecutionTargetRead
@@ -109,6 +110,42 @@ class FakeArtifactService:
         return []
 
 
+class FakeApprovalService:
+    async def list_for_run(self, run_id):
+        del run_id
+        return [
+            ApprovalRequestRead(
+                id="approval-1",
+                run_id="task-1",
+                run_step_id="step-1",
+                target_type="pull_request",
+                target_id="pr-123",
+                status="pending",
+                decision_type="yes_no",
+                policy_key="pr_review",
+                reason="Approve the implementation PR",
+                request_payload_json={"pr_number": 123},
+                expires_at=None,
+                created_at="2026-04-10T00:00:00Z",
+                updated_at="2026-04-10T00:00:00Z",
+            )
+        ]
+
+    async def list_decisions_for_run(self, run_id):
+        del run_id
+        return [
+            ApprovalDecisionRead(
+                id="decision-1",
+                approval_request_id="approval-1",
+                decision="approved",
+                decided_by="reviewer-b",
+                comment="looks good",
+                decision_payload_json={"source": "openwebui"},
+                created_at="2026-04-10T00:01:00Z",
+            )
+        ]
+
+
 class FakeExecutionTargetService:
     async def choose_target(self, **kwargs):
         del kwargs
@@ -158,6 +195,7 @@ def test_create_task_builds_envelope_with_worker_dispatch_and_broker_hints():
     service = AgentTaskService(
         run_service=FakeRunService(),
         event_service=FakeEventService(),
+        approval_service=FakeApprovalService(),
         artifact_service=FakeArtifactService(),
         execution_target_service=FakeExecutionTargetService(),
     )
@@ -178,3 +216,5 @@ def test_create_task_builds_envelope_with_worker_dispatch_and_broker_hints():
     assert response.task.job.id == "task-1"
     assert response.task.envelope.dispatch.target_id == "worker-b"
     assert response.task.envelope.preferred_backend == BackendName.CODEX
+    assert response.task.approvals[0].id == "approval-1"
+    assert response.task.approval_decisions[0].id == "decision-1"

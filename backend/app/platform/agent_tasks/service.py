@@ -22,6 +22,8 @@ from app.platform.agent_tasks.schemas import (
     TaskState,
     WorkerDispatchDecision,
 )
+from app.platform.approvals.repository import ApprovalRepository
+from app.platform.approvals.service import ApprovalService
 from app.platform.artifacts.repository import ArtifactRepository
 from app.platform.artifacts.schemas import ArtifactCreate
 from app.platform.artifacts.service import ArtifactService
@@ -40,11 +42,13 @@ class AgentTaskService:
         *,
         run_service: RunService,
         event_service: EventService,
+        approval_service: ApprovalService,
         artifact_service: ArtifactService,
         execution_target_service: ExecutionTargetService,
     ) -> None:
         self._run_service = run_service
         self._event_service = event_service
+        self._approval_service = approval_service
         self._artifact_service = artifact_service
         self._execution_target_service = execution_target_service
 
@@ -270,6 +274,8 @@ class AgentTaskService:
                     detail="Stored task envelope is invalid.",
                 ) from exc
         events = await self._event_service.list_for_run(task_id)
+        approvals = await self._approval_service.list_for_run(task_id)
+        approval_decisions = await self._approval_service.list_decisions_for_run(task_id)
         artifacts = await self._artifact_service.list_for_run(task_id)
         result = None
         if job.result_json is not None:
@@ -282,6 +288,8 @@ class AgentTaskService:
             step=step,
             job=job,
             events=events,
+            approvals=approvals,
+            approval_decisions=approval_decisions,
             artifacts=artifacts,
             result=result,
         )
@@ -291,12 +299,14 @@ def build_agent_task_service(
     *,
     run_repository: RunRepository,
     event_repository: EventRepository,
+    approval_repository: ApprovalRepository,
     artifact_repository: ArtifactRepository,
     execution_target_service: ExecutionTargetService,
 ) -> AgentTaskService:
     return AgentTaskService(
         run_service=RunService(run_repository),
         event_service=EventService(event_repository),
+        approval_service=ApprovalService(approval_repository),
         artifact_service=ArtifactService(artifact_repository),
         execution_target_service=execution_target_service,
     )
