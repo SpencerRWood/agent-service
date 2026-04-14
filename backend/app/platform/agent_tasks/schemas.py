@@ -14,12 +14,17 @@ from app.platform.runs.schemas import RunRead, RunStepRead
 
 class TaskClass(StrEnum):
     CLASSIFY_ONLY = "classify_only"
+    ANSWER_QUESTION = "answer_question"
+    SUMMARIZE = "summarize"
     PLAN_ONLY = "plan_only"
     INSPECT_REPO = "inspect_repo"
+    ANALYZE = "analyze"
     IMPLEMENT = "implement"
+    REFACTOR = "refactor"
     DEBUG = "debug"
     REVIEW = "review"
-    SUMMARIZE = "summarize"
+    TEST = "test"
+    DOCUMENT = "document"
 
 
 class BackendName(StrEnum):

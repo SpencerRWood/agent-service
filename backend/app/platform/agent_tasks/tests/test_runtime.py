@@ -63,8 +63,18 @@ def build_envelope(
 
 def test_task_classification_defaults_match_required_guidance():
     assert classify_task("please summarize this repo") == TaskClass.SUMMARIZE
+    assert classify_task("what API path streams task progress?") == TaskClass.ANSWER_QUESTION
+    assert classify_task("analyze the tradeoffs between these two approaches") == TaskClass.ANALYZE
+    assert classify_task("refactor this module for readability") == TaskClass.REFACTOR
+    assert classify_task("write tests for the execution target router") == TaskClass.TEST
+    assert classify_task("update the README with setup instructions") == TaskClass.DOCUMENT
     assert default_preferred_backend_for_task(TaskClass.CLASSIFY_ONLY) == BackendName.LOCAL_LLM
+    assert default_preferred_backend_for_task(TaskClass.ANSWER_QUESTION) == BackendName.LOCAL_LLM
+    assert default_preferred_backend_for_task(TaskClass.ANALYZE) == BackendName.LOCAL_LLM
     assert default_preferred_backend_for_task(TaskClass.IMPLEMENT) == BackendName.CODEX
+    assert default_preferred_backend_for_task(TaskClass.REFACTOR) == BackendName.CODEX
+    assert default_preferred_backend_for_task(TaskClass.TEST) == BackendName.CODEX
+    assert default_preferred_backend_for_task(TaskClass.DOCUMENT) == BackendName.CODEX
 
 
 def test_opencode_runtime_executes_local_llm_task():
@@ -87,6 +97,26 @@ def test_opencode_runtime_dry_run_executes_coding_backend_through_opencode():
             build_envelope(
                 task_class=TaskClass.IMPLEMENT,
                 preferred_backend=BackendName.CODEX,
+            ),
+            reporter,
+        )
+    )
+
+    assert result.state == TaskState.COMPLETED
+    assert result.backend == BackendName.CODEX
+    assert result.raw_output["backend"] == "codex"
+
+
+def test_opencode_runtime_honors_explicit_codex_for_inspect_repo():
+    runtime = OpenCodeRuntime.from_settings()
+    reporter = RecordingReporter()
+
+    result = asyncio.run(
+        runtime.execute(
+            build_envelope(
+                task_class=TaskClass.INSPECT_REPO,
+                preferred_backend=BackendName.CODEX,
+                allowed_backends=[BackendName.CODEX, BackendName.LOCAL_LLM],
             ),
             reporter,
         )
