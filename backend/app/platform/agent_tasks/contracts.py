@@ -33,6 +33,8 @@ class ExecutorWorkPackage(BaseModel):
     run_id: str
     backend: str
     repo: str
+    runtime_key: str | None = None
+    public_agent_id: str | None = None
     project: ProjectContext | None = None
     branch_strategy: str
     instructions: str

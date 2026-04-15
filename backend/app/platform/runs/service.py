@@ -63,6 +63,6 @@ class RunService:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run step not found")
         step.status = status_value
         if output is not None:
-            step.output_json = output
+            step.output_json = {**(step.output_json or {}), **output}
         updated = await self._repository.update_step(step)
         return RunStepRead.model_validate(updated)

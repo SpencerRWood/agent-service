@@ -40,6 +40,7 @@ class ExecutionMode(StrEnum):
 
 class TaskState(StrEnum):
     QUEUED = "queued"
+    PENDING_APPROVAL = "pending_approval"
     PREFLIGHT_CHECK = "preflight_check"
     READY_TO_RUN = "ready_to_run"
     RUNNING = "running"
@@ -48,6 +49,7 @@ class TaskState(StrEnum):
     REROUTED = "rerouted"
     COMPLETED = "completed"
     FAILED = "failed"
+    REJECTED = "rejected"
 
 
 class ReasonCode(StrEnum):
@@ -85,6 +87,8 @@ class AgentTaskEnvelope(BaseModel):
     user_prompt: str
     normalized_goal: str
     task_class: TaskClass
+    public_agent_id: str | None = None
+    runtime_key: str | None = None
     target_repo: str | None = None
     target_branch: str | None = None
     execution_mode: ExecutionMode = ExecutionMode.OPENCODE
@@ -99,6 +103,8 @@ class AgentTaskEnvelope(BaseModel):
 
 class AgentTaskCreateRequest(BaseModel):
     task_class: TaskClass | None = None
+    public_agent_id: str | None = None
+    runtime_key: str | None = None
     prompt: str
     repo: str | None = None
     target_branch: str | None = None
@@ -157,3 +163,24 @@ class AgentTaskRead(BaseModel):
 
 class AgentTaskCreateResponse(BaseModel):
     task: AgentTaskRead
+
+
+class PublicTaskActionLinks(BaseModel):
+    stream_url: str
+    approve_url: str | None = None
+    reject_url: str | None = None
+
+
+class PublicAgentTaskRead(BaseModel):
+    task_id: str
+    agent_id: str | None = None
+    runtime_key: str | None = None
+    state: str
+    summary: str | None = None
+    approval_pending: bool = False
+    links: PublicTaskActionLinks
+
+
+class PublicTaskDecisionRequest(BaseModel):
+    decided_by: str | None = None
+    comment: str | None = None
