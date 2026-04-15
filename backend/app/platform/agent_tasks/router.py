@@ -13,9 +13,12 @@ from app.platform.agent_tasks.schemas import (
     AgentTaskCreateRequest,
     AgentTaskCreateResponse,
     AgentTaskProgressCreate,
-    AgentTaskRead,
+    PublicAgentTaskRead,
+    PublicTaskDecisionRequest,
+    TaskState,
 )
 from app.platform.agent_tasks.service import AgentTaskService, build_agent_task_service
+from app.platform.agent_tasks.task_store import TaskStore, get_task_store
 from app.platform.approvals.repository import ApprovalRepository
 from app.platform.artifacts.repository import ArtifactRepository
 from app.platform.artifacts.schemas import ArtifactCreate
@@ -46,12 +49,12 @@ async def create_agent_task(
     return await service.create_task(request)
 
 
-@router.get("/{task_id}", response_model=AgentTaskRead)
+@router.get("/{task_id}", response_model=PublicAgentTaskRead)
 async def get_agent_task(
     task_id: str,
-    service: AgentTaskService = Depends(get_agent_task_service),
-) -> AgentTaskRead:
-    return await service.get_task(task_id)
+    task_store: TaskStore = Depends(get_task_store),
+) -> PublicAgentTaskRead:
+    return await task_store.get_public_task(task_id)
 
 
 @router.get("/{task_id}/stream")
@@ -101,6 +104,18 @@ async def stream_agent_task(
                     "event: artifact\n"
                     f"data: {json.dumps({'type': artifact.artifact_type, 'title': artifact.title})}\n\n"
                 )
+            if any(approval.status in {"pending", "requested"} for approval in task.approvals):
+                yield (
+                    "event: terminal\n"
+                    f"data: {json.dumps({'status': 'pending_approval', 'task_id': task.task_id})}\n\n"
+                )
+                break
+            if task.state == TaskState.REJECTED:
+                yield (
+                    "event: terminal\n"
+                    f"data: {json.dumps({'status': 'rejected', 'task_id': task.task_id})}\n\n"
+                )
+                break
             if task.job and task.job.status in {"completed", "failed"}:
                 yield (
                     "event: terminal\n"
@@ -110,6 +125,26 @@ async def stream_agent_task(
             await asyncio.sleep(1.0)
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@router.post("/{task_id}/approve", response_model=PublicAgentTaskRead)
+async def approve_agent_task(
+    task_id: str,
+    request: PublicTaskDecisionRequest,
+    task_store: TaskStore = Depends(get_task_store),
+) -> PublicAgentTaskRead:
+    await task_store.approve_task(task_id, decided_by=request.decided_by, comment=request.comment)
+    return await task_store.get_public_task(task_id)
+
+
+@router.post("/{task_id}/reject", response_model=PublicAgentTaskRead)
+async def reject_agent_task(
+    task_id: str,
+    request: PublicTaskDecisionRequest,
+    task_store: TaskStore = Depends(get_task_store),
+) -> PublicAgentTaskRead:
+    await task_store.reject_task(task_id, decided_by=request.decided_by, comment=request.comment)
+    return await task_store.get_public_task(task_id)
 
 
 @worker_router.post("/{task_id}/progress", status_code=202)

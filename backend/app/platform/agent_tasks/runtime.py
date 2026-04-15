@@ -313,7 +313,8 @@ class OpenCodeExecutor:
         selection: BackendSelection,
     ) -> AgentTaskResult:
         summary = (
-            f"OpenCode routed {envelope.task_class.value} to "
+            f"OpenCode routed {envelope.public_agent_id or envelope.task_class.value} "
+            f"via {envelope.runtime_key or 'default_runtime'} to "
             f"{selection.backend.value} in dry-run mode for "
             f"{envelope.target_repo or 'default'}."
         )
@@ -323,7 +324,8 @@ class OpenCodeExecutor:
         content = (
             {
                 "markdown": (
-                    f"# {envelope.task_class.value}\n\n{summary}\n\nPrompt:\n{envelope.user_prompt}"
+                    f"# {envelope.public_agent_id or envelope.task_class.value}\n\n"
+                    f"{summary}\n\nPrompt:\n{envelope.user_prompt}"
                 )
             }
             if selection.backend == BackendName.LOCAL_LLM
@@ -381,17 +383,23 @@ class OpenCodeExecutor:
             run_id=envelope.run_id,
             backend=backend.value,
             repo=envelope.target_repo or "default",
+            runtime_key=envelope.runtime_key,
+            public_agent_id=envelope.public_agent_id,
             project=ProjectContext(project_path=envelope.metadata.get("project_path")),
             branch_strategy=envelope.target_branch or f"agent-task/{envelope.task_id}",
             instructions=envelope.user_prompt,
             constraints=[
                 f"task_class={envelope.task_class.value}",
+                f"public_agent_id={envelope.public_agent_id or 'none'}",
+                f"runtime_key={envelope.runtime_key or 'none'}",
                 f"execution_mode={envelope.execution_mode.value}",
             ],
             acceptance_criteria=_acceptance_criteria_for_task(envelope.task_class),
             source_metadata={
                 "task_id": envelope.task_id,
                 "correlation_id": envelope.correlation_id,
+                "public_agent_id": envelope.public_agent_id,
+                "runtime_key": envelope.runtime_key,
                 "route_profile": envelope.dispatch.route_profile,
                 "allowed_backends": [candidate.value for candidate in envelope.allowed_backends],
                 "preferred_backend": envelope.preferred_backend.value
@@ -459,12 +467,15 @@ class OpenCodeRuntime:
             (
                 f"{envelope.execution_mode.value} selected worker "
                 f"{envelope.dispatch.target_id} with preferred backend "
-                f"{envelope.preferred_backend.value if envelope.preferred_backend else 'none'}."
+                f"{envelope.preferred_backend.value if envelope.preferred_backend else 'none'} "
+                f"for {envelope.public_agent_id or envelope.task_class.value}."
             ),
             {
                 "state": TaskState.QUEUED.value,
                 "execution_mode": envelope.execution_mode.value,
                 "dispatch_target": envelope.dispatch.target_id,
+                "public_agent_id": envelope.public_agent_id,
+                "runtime_key": envelope.runtime_key,
                 "preferred_backend": envelope.preferred_backend.value
                 if envelope.preferred_backend is not None
                 else None,

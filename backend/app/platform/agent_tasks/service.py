@@ -23,6 +23,7 @@ from app.platform.agent_tasks.schemas import (
     WorkerDispatchDecision,
 )
 from app.platform.approvals.repository import ApprovalRepository
+from app.platform.approvals.schemas import ApprovalDecisionCreate, ApprovalRequestCreate
 from app.platform.approvals.service import ApprovalService
 from app.platform.artifacts.repository import ArtifactRepository
 from app.platform.artifacts.schemas import ArtifactCreate
@@ -66,6 +67,8 @@ class AgentTaskService:
                     "user_prompt": request.prompt,
                     "target_repo": request.repo,
                     "target_branch": request.target_branch,
+                    "public_agent_id": request.public_agent_id,
+                    "runtime_key": request.runtime_key,
                     "metadata": request.metadata,
                 },
             ),
@@ -85,6 +88,8 @@ class AgentTaskService:
             user_prompt=request.prompt,
             normalized_goal=normalize_goal(request.prompt),
             task_class=task_class,
+            public_agent_id=request.public_agent_id,
+            runtime_key=request.runtime_key,
             target_repo=request.repo,
             target_branch=request.target_branch,
             execution_mode=request.execution_mode,
@@ -95,6 +100,11 @@ class AgentTaskService:
             return_artifacts=request.return_artifacts,
             metadata=request.metadata,
             dispatch=dispatch,
+        )
+        await self._run_service.update_step_status(
+            step.id,
+            status_value=step.status,
+            output={"task_envelope": envelope.model_dump(mode="json")},
         )
 
         await self._event_service.create(
@@ -107,6 +117,8 @@ class AgentTaskService:
                 payload={
                     "state": TaskState.QUEUED.value,
                     "task_class": task_class.value,
+                    "public_agent_id": request.public_agent_id,
+                    "runtime_key": request.runtime_key,
                     "normalized_goal": envelope.normalized_goal,
                     "preferred_backend": preferred_backend.value,
                     "allowed_backends": [backend.value for backend in allowed_backends],
@@ -120,19 +132,148 @@ class AgentTaskService:
             )
         )
 
-        job = await self._execution_target_service.create_job(
-            target_id=dispatch.target_id,
-            tool_name="agent.run_task",
-            payload={"task": envelope.model_dump(mode="json")},
-            job_id=run.id,
-        )
-        if request.wait_for_completion:
+        job = None
+        if self._requires_approval(envelope):
+            await self._approval_service.create_request(
+                ApprovalRequestCreate(
+                    run_id=run.id,
+                    run_step_id=step.id,
+                    target_type="agent_task",
+                    target_id=run.id,
+                    reason=f"Approve {task_class.value} task before worker execution.",
+                    policy_key="agent_task_execution",
+                    requested_decision={
+                        "task_id": run.id,
+                        "public_agent_id": envelope.public_agent_id,
+                        "runtime_key": envelope.runtime_key,
+                    },
+                )
+            )
+            await self._run_service.update_run_status(run.id, TaskState.PENDING_APPROVAL.value)
+            await self._run_service.update_step_status(
+                step.id,
+                status_value=TaskState.PENDING_APPROVAL.value,
+            )
+            await self._event_service.create(
+                EventCreate(
+                    run_id=run.id,
+                    run_step_id=step.id,
+                    entity_type="agent_task",
+                    entity_id=run.id,
+                    event_type="agent.task.awaiting_approval",
+                    payload={
+                        "state": TaskState.PENDING_APPROVAL.value,
+                        "public_agent_id": envelope.public_agent_id,
+                        "runtime_key": envelope.runtime_key,
+                        "message": "Task is waiting for approval before dispatch.",
+                    },
+                    actor_type="broker",
+                    actor_id="agent-services",
+                    trace_id=correlation_id,
+                )
+            )
+        else:
+            job = await self._dispatch_task(envelope)
+        if request.wait_for_completion and job is not None:
             job = await self._execution_target_service.wait_for_job(job.id)
         return AgentTaskCreateResponse(
             task=await self._build_task_read(run.id, envelope=envelope, job=job)
         )
 
     async def get_task(self, task_id: str) -> AgentTaskRead:
+        return await self._build_task_read(task_id)
+
+    async def approve_task(
+        self,
+        task_id: str,
+        *,
+        decided_by: str | None = None,
+        comment: str | None = None,
+    ) -> AgentTaskRead:
+        task = await self._build_task_read(task_id)
+        approval = _pending_approval_for_task(task)
+        if approval is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Task does not have a pending approval request.",
+            )
+        await self._approval_service.create_decision(
+            approval.id,
+            ApprovalDecisionCreate(
+                decision="approved",
+                decided_by=decided_by,
+                comment=comment,
+            ),
+        )
+        await self._run_service.update_run_status(task.run.id, TaskState.QUEUED.value)
+        await self._run_service.update_step_status(
+            task.step.id,
+            status_value=TaskState.QUEUED.value,
+        )
+        await self._event_service.create(
+            EventCreate(
+                run_id=task.run.id,
+                run_step_id=task.step.id,
+                entity_type="agent_task",
+                entity_id=task_id,
+                event_type="agent.task.approved",
+                payload={
+                    "state": TaskState.QUEUED.value,
+                    "message": "Task approved and queued for worker dispatch.",
+                },
+                actor_type="user",
+                actor_id=decided_by,
+                trace_id=task.envelope.correlation_id,
+            )
+        )
+        if task.job is None:
+            await self._dispatch_task(task.envelope)
+        return await self._build_task_read(task_id)
+
+    async def reject_task(
+        self,
+        task_id: str,
+        *,
+        decided_by: str | None = None,
+        comment: str | None = None,
+    ) -> AgentTaskRead:
+        task = await self._build_task_read(task_id)
+        approval = _pending_approval_for_task(task)
+        if approval is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Task does not have a pending approval request.",
+            )
+        await self._approval_service.create_decision(
+            approval.id,
+            ApprovalDecisionCreate(
+                decision="rejected",
+                decided_by=decided_by,
+                comment=comment,
+            ),
+        )
+        await self._run_service.update_run_status(task.run.id, TaskState.REJECTED.value)
+        await self._run_service.update_step_status(
+            task.step.id,
+            status_value=TaskState.REJECTED.value,
+            output={"rejected": True, "comment": comment},
+        )
+        await self._event_service.create(
+            EventCreate(
+                run_id=task.run.id,
+                run_step_id=task.step.id,
+                entity_type="agent_task",
+                entity_id=task_id,
+                event_type="agent.task.rejected",
+                payload={
+                    "state": TaskState.REJECTED.value,
+                    "message": "Task approval was rejected.",
+                },
+                actor_type="user",
+                actor_id=decided_by,
+                trace_id=task.envelope.correlation_id,
+            )
+        )
         return await self._build_task_read(task_id)
 
     async def publish_progress(self, task_id: str, request: AgentTaskProgressCreate) -> None:
@@ -231,6 +372,8 @@ class AgentTaskService:
             routing_context={
                 "prompt": request.prompt,
                 "task_class": task_class.value,
+                "public_agent_id": request.public_agent_id,
+                "runtime_key": request.runtime_key,
                 "route_profile": route_profile,
                 "execution_mode": request.execution_mode.value,
             },
@@ -243,10 +386,15 @@ class AgentTaskService:
         return WorkerDispatchDecision(
             target_id=target.id,
             route_profile=route_profile,
-            reason=f"{request.execution_mode.value} selected worker '{target.id}' for {task_class.value}.",
+            reason=(
+                f"{request.execution_mode.value} selected worker '{target.id}' for "
+                f"{request.public_agent_id or task_class.value}."
+            ),
             debug={
                 "request_backend": request.backend.value if request.backend else None,
                 "selected_target": target.id,
+                "public_agent_id": request.public_agent_id,
+                "runtime_key": request.runtime_key,
                 "supported_route_profiles": list(available_route_profiles(task_class)),
             },
         )
@@ -264,10 +412,19 @@ class AgentTaskService:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task step not found")
         step = steps[0]
         if job is None:
-            job = await self._execution_target_service.get_job(task_id)
+            try:
+                job = await self._execution_target_service.get_job(task_id)
+            except HTTPException as exc:
+                if exc.status_code != status.HTTP_404_NOT_FOUND:
+                    raise
+                job = None
         if envelope is None:
             try:
-                envelope = AgentTaskEnvelope.model_validate(job.payload_json["task"])
+                if job is not None:
+                    payload = job.payload_json["task"]
+                else:
+                    payload = ((step.output_json or {}).get("task_envelope")) or {}
+                envelope = AgentTaskEnvelope.model_validate(payload)
             except (KeyError, TypeError, ValueError) as exc:
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -294,6 +451,17 @@ class AgentTaskService:
             result=result,
         )
 
+    async def _dispatch_task(self, envelope: AgentTaskEnvelope):
+        return await self._execution_target_service.create_job(
+            target_id=envelope.dispatch.target_id,
+            tool_name="agent.run_task",
+            payload={"task": envelope.model_dump(mode="json")},
+            job_id=envelope.run_id,
+        )
+
+    def _requires_approval(self, envelope: AgentTaskEnvelope) -> bool:
+        return str(envelope.approval_policy.get("mode") or "none") == "required"
+
 
 def build_agent_task_service(
     *,
@@ -310,3 +478,10 @@ def build_agent_task_service(
         artifact_service=ArtifactService(artifact_repository),
         execution_target_service=execution_target_service,
     )
+
+
+def _pending_approval_for_task(task: AgentTaskRead):
+    for approval in task.approvals:
+        if approval.status in {"pending", "requested"}:
+            return approval
+    return None

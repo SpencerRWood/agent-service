@@ -142,6 +142,8 @@ def _render_message(work_package: ExecutorWorkPackage, backend: BackendName) -> 
     constraints = "\n".join(f"- {item}" for item in work_package.constraints)
     acceptance = "\n".join(f"- {item}" for item in work_package.acceptance_criteria)
     return (
+        f"Public agent: {work_package.public_agent_id or 'none'}\n"
+        f"Internal runtime: {work_package.runtime_key or 'default'}\n"
         f"Backend hint: {backend.value}\n"
         f"Repo: {work_package.repo}\n"
         f"Branch strategy: {work_package.branch_strategy}\n\n"
