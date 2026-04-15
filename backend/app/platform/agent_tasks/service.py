@@ -435,7 +435,7 @@ class AgentTaskService:
         approval_decisions = await self._approval_service.list_decisions_for_run(task_id)
         artifacts = await self._artifact_service.list_for_run(task_id)
         result = None
-        if job.result_json is not None:
+        if job is not None and job.result_json is not None:
             result = AgentTaskResult.model_validate(job.result_json)
         return AgentTaskRead(
             task_id=task_id,
