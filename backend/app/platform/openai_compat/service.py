@@ -7,6 +7,7 @@ from collections.abc import AsyncIterator
 
 from fastapi.responses import StreamingResponse
 
+from app.platform.agent_tasks.enrichment import is_enrichment_task
 from app.platform.agent_tasks.schemas import AgentTaskCreateRequest
 from app.platform.agent_tasks.task_store import TaskStore, to_public_task
 from app.platform.agents.schemas import AgentDefinition
@@ -46,6 +47,7 @@ class OpenAICompatService:
         agent = self._agent_registry.get_agent(request.model)
         runtime = self._runtime_registry.get_runtime(agent.runtime)
         prompt = _messages_to_prompt(request.messages, runtime.prompt_preamble)
+        suppress_progress = is_enrichment_task(prompt)
         metadata = _build_idempotency_metadata(request=request, prompt=prompt)
         task_response = await self._task_store.create_task(
             AgentTaskCreateRequest(
@@ -66,12 +68,22 @@ class OpenAICompatService:
         public_task = to_public_task(task_response.task)
         if request.stream and agent.supports_streaming:
             return StreamingResponse(
-                self._stream_chat(task_id=task_response.task.task_id, model=agent.id),
+                self._stream_chat(
+                    task_id=task_response.task.task_id,
+                    model=agent.id,
+                    suppress_progress=suppress_progress,
+                ),
                 media_type="text/event-stream",
             )
         return self._build_response(agent, public_task)
 
-    async def _stream_chat(self, *, task_id: str, model: str) -> AsyncIterator[str]:
+    async def _stream_chat(
+        self,
+        *,
+        task_id: str,
+        model: str,
+        suppress_progress: bool = False,
+    ) -> AsyncIterator[str]:
         task = await self._task_store.get_public_task(task_id)
         task_payload = _task_payload(task)
         intro = {
@@ -88,22 +100,27 @@ class OpenAICompatService:
         sent_event_ids: set[str] = set()
         while True:
             full_task = await self._task_store.get_task(task_id)
-            for event in full_task.events:
-                if event.id in sent_event_ids:
-                    continue
-                sent_event_ids.add(event.id)
-                message = str(event.payload_json.get("message") or "").strip()
-                if not message:
-                    continue
-                chunk = {
-                    "id": f"chatcmpl_{task_id}",
-                    "object": "chat.completion.chunk",
-                    "model": model,
-                    "choices": [
-                        {"index": 0, "delta": {"content": f"{message}\n"}, "finish_reason": None}
-                    ],
-                }
-                yield f"data: {json.dumps(chunk)}\n\n"
+            if not suppress_progress:
+                for event in full_task.events:
+                    if event.id in sent_event_ids:
+                        continue
+                    sent_event_ids.add(event.id)
+                    message = str(event.payload_json.get("message") or "").strip()
+                    if not message:
+                        continue
+                    chunk = {
+                        "id": f"chatcmpl_{task_id}",
+                        "object": "chat.completion.chunk",
+                        "model": model,
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {"content": f"{message}\n"},
+                                "finish_reason": None,
+                            }
+                        ],
+                    }
+                    yield f"data: {json.dumps(chunk)}\n\n"
             public_task = to_public_task(full_task)
             if public_task.approval_pending or public_task.state in {
                 "completed",

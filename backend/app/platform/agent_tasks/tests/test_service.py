@@ -30,6 +30,7 @@ class FakeRunService:
             "task-1": [_build_step_read("task-1", "step-1", step_type="implement", input_json={})],
         }
         self.recent_steps: list[RunStepRead] = []
+        self.recent_runs: list[RunRead] = []
 
     async def create_run(self, request):
         run, _created = await self.create_or_get_run(request)
@@ -77,6 +78,9 @@ class FakeRunService:
     async def list_recent_steps(self, *, limit=50):
         return self.recent_steps[:limit]
 
+    async def list_recent_runs(self, *, limit=50):
+        return self.recent_runs[:limit]
+
     async def update_run_status(self, run_id, status_value):
         run = self.runs[run_id]
         updated = run.model_copy(update={"status": status_value})
@@ -104,6 +108,7 @@ class FakeRunService:
 class FakeEventService:
     def __init__(self) -> None:
         self.events = []
+        self.events_by_run: dict[str, list[EventRead]] = {}
 
     async def create(self, request):
         self.events.append(request)
@@ -122,11 +127,13 @@ class FakeEventService:
         )
 
     async def list_for_run(self, run_id):
-        del run_id
-        return []
+        return self.events_by_run.get(run_id, [])
 
 
 class FakeArtifactService:
+    def __init__(self) -> None:
+        self.artifacts_by_run: dict[str, list[ArtifactRead]] = {}
+
     async def create(self, request):
         return ArtifactRead(
             id="artifact-1",
@@ -142,47 +149,57 @@ class FakeArtifactService:
         )
 
     async def list_for_run(self, run_id):
-        del run_id
-        return []
+        return self.artifacts_by_run.get(run_id, [])
 
 
 class FakeApprovalService:
+    def __init__(self) -> None:
+        self.approvals_by_run: dict[str, list[ApprovalRequestRead]] = {}
+        self.decisions_by_run: dict[str, list[ApprovalDecisionRead]] = {}
+
     async def list_for_run(self, run_id):
-        del run_id
-        return [
-            ApprovalRequestRead(
-                id="approval-1",
-                run_id="task-1",
-                run_step_id="step-1",
-                target_type="pull_request",
-                target_id="pr-123",
-                status="pending",
-                decision_type="yes_no",
-                policy_key="pr_review",
-                reason="Approve the implementation PR",
-                request_payload_json={"pr_number": 123},
-                expires_at=None,
-                created_at="2026-04-10T00:00:00Z",
-                updated_at="2026-04-10T00:00:00Z",
-            )
-        ]
+        return self.approvals_by_run.get(
+            run_id,
+            [
+                ApprovalRequestRead(
+                    id="approval-1",
+                    run_id="task-1",
+                    run_step_id="step-1",
+                    target_type="pull_request",
+                    target_id="pr-123",
+                    status="pending",
+                    decision_type="yes_no",
+                    policy_key="pr_review",
+                    reason="Approve the implementation PR",
+                    request_payload_json={"pr_number": 123},
+                    expires_at=None,
+                    created_at="2026-04-10T00:00:00Z",
+                    updated_at="2026-04-10T00:00:00Z",
+                )
+            ],
+        )
 
     async def list_decisions_for_run(self, run_id):
-        del run_id
-        return [
-            ApprovalDecisionRead(
-                id="decision-1",
-                approval_request_id="approval-1",
-                decision="approved",
-                decided_by="reviewer-b",
-                comment="looks good",
-                decision_payload_json={"source": "openwebui"},
-                created_at="2026-04-10T00:01:00Z",
-            )
-        ]
+        return self.decisions_by_run.get(
+            run_id,
+            [
+                ApprovalDecisionRead(
+                    id="decision-1",
+                    approval_request_id="approval-1",
+                    decision="approved",
+                    decided_by="reviewer-b",
+                    comment="looks good",
+                    decision_payload_json={"source": "openwebui"},
+                    created_at="2026-04-10T00:01:00Z",
+                )
+            ],
+        )
 
 
 class FakeExecutionTargetService:
+    def __init__(self) -> None:
+        self.jobs_by_id: dict[str, ExecutionJobRead] = {}
+
     async def choose_target(self, **kwargs):
         del kwargs
         return ExecutionTargetRead(
@@ -223,8 +240,12 @@ class FakeExecutionTargetService:
         raise AssertionError(f"wait_for_job should not be called for {job_id}")
 
     async def get_job(self, job_id):
-        del job_id
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Execution job not found")
+        job = self.jobs_by_id.get(job_id)
+        if job is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Execution job not found"
+            )
+        return job
 
 
 def test_create_task_builds_envelope_with_worker_dispatch_and_broker_hints():
@@ -336,6 +357,148 @@ def test_create_task_reuses_recent_duplicate_by_idempotency_key():
     assert run_service.create_run_calls == 0
 
 
+def test_list_public_tasks_hides_enrichment_runs_and_merges_metadata():
+    run_service = FakeRunService()
+    event_service = FakeEventService()
+    approval_service = FakeApprovalService()
+    artifact_service = FakeArtifactService()
+    execution_target_service = FakeExecutionTargetService()
+
+    main_task_id = "fe95a4c9-75a8-47e5-87b8-91f476cd585e"
+    tags_task_id = "37347370-8447-42b4-a7c6-5664f5ab56bc"
+    title_task_id = "bf7bf2c4-0222-4666-b816-e84dcfa815cc"
+    followups_task_id = "745161a8-8c00-4d5c-aad0-ec95b8749c7e"
+
+    run_service.runs = {
+        main_task_id: _build_run_read(main_task_id, status="completed"),
+        tags_task_id: _build_run_read(tags_task_id, status="completed"),
+        title_task_id: _build_run_read(title_task_id, status="completed"),
+        followups_task_id: _build_run_read(followups_task_id, status="completed"),
+    }
+    run_service.steps_by_run = {
+        main_task_id: [
+            _build_step_read(
+                main_task_id,
+                "step-main",
+                step_type="plan_only",
+                input_json={},
+                output_json={
+                    "task_envelope": _build_envelope(
+                        task_id=main_task_id,
+                        prompt="Show me a plan for implementing multi-stage agent workflow",
+                    ).model_dump(mode="json")
+                },
+            )
+        ],
+        tags_task_id: [
+            _build_step_read(
+                tags_task_id,
+                "step-tags",
+                step_type="plan_only",
+                input_json={},
+                output_json={
+                    "task_envelope": _build_envelope(
+                        task_id=tags_task_id,
+                        prompt=f"### Task: Generate 1-3 broad tags categorizing the main themes of the chat history. Task ID: `{main_task_id}`",
+                    ).model_dump(mode="json")
+                },
+            )
+        ],
+        title_task_id: [
+            _build_step_read(
+                title_task_id,
+                "step-title",
+                step_type="plan_only",
+                input_json={},
+                output_json={
+                    "task_envelope": _build_envelope(
+                        task_id=title_task_id,
+                        prompt=f"### Task: Generate a concise, 3-5 word title with an emoji summarizing the chat history. Task ID: `{main_task_id}`",
+                    ).model_dump(mode="json")
+                },
+            )
+        ],
+        followups_task_id: [
+            _build_step_read(
+                followups_task_id,
+                "step-followups",
+                step_type="plan_only",
+                input_json={},
+                output_json={
+                    "task_envelope": _build_envelope(
+                        task_id=followups_task_id,
+                        prompt=f"### Task: Suggest 3-5 relevant follow-up questions or prompts that the user might naturally ask next in this conversation as a **user**. Task ID: `{main_task_id}`",
+                    ).model_dump(mode="json")
+                },
+            )
+        ],
+    }
+    run_service.recent_runs = [
+        run_service.runs[tags_task_id],
+        run_service.runs[title_task_id],
+        run_service.runs[followups_task_id],
+        run_service.runs[main_task_id],
+    ]
+    execution_target_service.jobs_by_id = {
+        main_task_id: _build_job_read(
+            main_task_id,
+            prompt="Show me a plan for implementing multi-stage agent workflow",
+            summary="Main plan",
+        ),
+        tags_task_id: _build_job_read(
+            tags_task_id,
+            prompt=f"### Task: Generate 1-3 broad tags categorizing the main themes of the chat history. Task ID: `{main_task_id}`",
+            summary='{"tags": ["Technology", "Software Engineering"]}',
+        ),
+        title_task_id: _build_job_read(
+            title_task_id,
+            prompt=f"### Task: Generate a concise, 3-5 word title with an emoji summarizing the chat history. Task ID: `{main_task_id}`",
+            summary='{"title": "📋 Multi-Stage Agent Plan"}',
+        ),
+        followups_task_id: _build_job_read(
+            followups_task_id,
+            prompt=f"### Task: Suggest 3-5 relevant follow-up questions or prompts that the user might naturally ask next in this conversation as a **user**. Task ID: `{main_task_id}`",
+            summary='{"follow_ups": ["How do we handle retries?", "What tests should we add?"]}',
+        ),
+    }
+    event_service.events_by_run = {
+        main_task_id: [
+            EventRead(
+                id="event-main",
+                run_id=main_task_id,
+                run_step_id="step-main",
+                entity_type="agent_task",
+                entity_id=main_task_id,
+                event_type="agent.task.completed",
+                payload_json={"message": "Main plan completed."},
+                actor_type="worker",
+                actor_id="worker-b",
+                trace_id="corr-main",
+                created_at="2026-04-10T00:00:10Z",
+            )
+        ]
+    }
+
+    service = AgentTaskService(
+        run_service=run_service,
+        event_service=event_service,
+        approval_service=approval_service,
+        artifact_service=artifact_service,
+        execution_target_service=execution_target_service,
+    )
+
+    response = asyncio.run(service.list_public_tasks(limit=10))
+
+    assert len(response.items) == 1
+    assert response.items[0].task_id == main_task_id
+    assert response.items[0].conversation_title == "📋 Multi-Stage Agent Plan"
+    assert response.items[0].conversation_tags == ["Technology", "Software Engineering"]
+    assert response.items[0].follow_ups == [
+        "How do we handle retries?",
+        "What tests should we add?",
+    ]
+
+
 def _build_run_read(run_id: str, *, status: str, idempotency_key: str | None = None) -> RunRead:
     now = datetime.now(UTC).isoformat()
     return RunRead(
@@ -376,4 +539,60 @@ def _build_step_read(
         started_at=None,
         completed_at=None,
         created_at=now,
+    )
+
+
+def _build_envelope(*, task_id: str, prompt: str) -> AgentTaskEnvelope:
+    return AgentTaskEnvelope(
+        task_id=task_id,
+        run_id=task_id,
+        step_id=f"step-{task_id}",
+        correlation_id=f"corr-{task_id}",
+        user_prompt=prompt,
+        normalized_goal=prompt,
+        task_class=TaskClass.PLAN_ONLY,
+        public_agent_id="planner",
+        runtime_key="planner_runtime",
+        target_repo=None,
+        target_branch=None,
+        allowed_backends=[BackendName.LOCAL_LLM],
+        preferred_backend=BackendName.LOCAL_LLM,
+        approval_policy={"mode": "none"},
+        timeout_policy={"seconds": 900},
+        return_artifacts=["summary"],
+        metadata={},
+        dispatch=WorkerDispatchDecision(
+            target_id="worker-b",
+            route_profile="cheap",
+            reason="test",
+        ),
+    )
+
+
+def _build_job_read(task_id: str, *, prompt: str, summary: str) -> ExecutionJobRead:
+    now = datetime.now(UTC).isoformat()
+    return ExecutionJobRead(
+        id=task_id,
+        target_id="worker-b",
+        tool_name="agent.run_task",
+        status="completed",
+        payload_json={
+            "task": _build_envelope(task_id=task_id, prompt=prompt).model_dump(mode="json")
+        },
+        result_json={
+            "state": "completed",
+            "backend": "local_llm",
+            "execution_mode": "opencode",
+            "summary": summary,
+            "reason_code": None,
+            "raw_output": {},
+            "artifacts": [],
+            "metrics": {},
+            "completed_at": now,
+        },
+        error_json=None,
+        claimed_by="worker-b",
+        created_at=now,
+        claimed_at=now,
+        completed_at=now,
     )

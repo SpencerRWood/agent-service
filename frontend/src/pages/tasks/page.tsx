@@ -163,10 +163,47 @@ export default function TasksPage() {
                 </div>
               </dl>
 
+              {task.conversation_title || task.conversation_tags.length > 0 ? (
+                <div className="task-card__summary">
+                  <strong>Conversation Metadata</strong>
+                  <div className="task-card__metadata">
+                    {task.conversation_title ? (
+                      <div>
+                        <span className="task-card__section-label">Title</span>
+                        <p className="task-card__metadata-text">{task.conversation_title}</p>
+                      </div>
+                    ) : null}
+                    {task.conversation_tags.length > 0 ? (
+                      <div>
+                        <span className="task-card__section-label">Tags</span>
+                        <div className="task-card__badges">
+                          {task.conversation_tags.map((tag) => (
+                            <span className="pill pill--neutral" key={tag}>
+                              {tag}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              ) : null}
+
               {task.summary ? (
                 <div className="task-card__summary">
                   <strong>Result</strong>
                   <pre className="task-card__code">{formatStructuredText(task.summary)}</pre>
+                </div>
+              ) : null}
+
+              {task.follow_ups.length > 0 ? (
+                <div className="task-card__summary">
+                  <strong>Suggested Follow-Ups</strong>
+                  <ul className="task-card__follow-ups">
+                    {task.follow_ups.map((followUp) => (
+                      <li key={followUp}>{followUp}</li>
+                    ))}
+                  </ul>
                 </div>
               ) : null}
 

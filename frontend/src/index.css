@@ -386,6 +386,16 @@ button {
   margin-bottom: 0.55rem;
 }
 
+.task-card__metadata {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.task-card__metadata-text {
+  margin: 0.25rem 0 0;
+  color: #355062;
+}
+
 .task-card__code {
   margin: 0;
   padding: 0.95rem 1rem;
@@ -397,6 +407,14 @@ button {
   font-size: 0.9rem;
   line-height: 1.55;
   white-space: pre-wrap;
+}
+
+.task-card__follow-ups {
+  margin: 0;
+  padding-left: 1.1rem;
+  color: #355062;
+  display: grid;
+  gap: 0.45rem;
 }
 
 .meta--three-up {

@@ -4,6 +4,7 @@ export type AgentTaskSummary = {
   task_id: string
   agent_id: string | null
   runtime_key: string | null
+  task_kind: string
   task_class: string
   state: string
   approval_pending: boolean
@@ -18,6 +19,9 @@ export type AgentTaskSummary = {
   completed_at: string | null
   duration_seconds: number | null
   last_event_message: string | null
+  conversation_title: string | null
+  conversation_tags: string[]
+  follow_ups: string[]
   stream_url: string
 }
 
