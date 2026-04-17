@@ -179,4 +179,9 @@ def _task_payload(task) -> dict:
 
 
 def _should_wait_inline(*, request: ChatCompletionRequest, runtime) -> bool:
-    return (not request.stream) and runtime.approval_mode == "none"
+    del request, runtime
+    # OpenWebUI may send non-streaming chat completion requests through the
+    # OpenAI-compatible endpoint. Waiting for remote worker completion keeps
+    # the origin request open long enough to trigger upstream proxy timeouts.
+    # Return promptly and direct clients to the task stream for progress.
+    return False
