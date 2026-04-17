@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 from fastapi import HTTPException, status
@@ -19,6 +19,7 @@ from app.platform.agent_tasks.schemas import (
     AgentTaskProgressCreate,
     AgentTaskRead,
     AgentTaskResult,
+    TaskClass,
     TaskState,
     WorkerDispatchDecision,
 )
@@ -55,6 +56,9 @@ class AgentTaskService:
 
     async def create_task(self, request: AgentTaskCreateRequest) -> AgentTaskCreateResponse:
         task_class = request.task_class or classify_task(request.prompt)
+        duplicate_task = await self._find_duplicate_task(request=request, task_class=task_class)
+        if duplicate_task is not None:
+            return AgentTaskCreateResponse(task=duplicate_task)
         run = await self._run_service.create_run(RunCreate(status=TaskState.QUEUED.value))
         step = await self._run_service.create_step(
             run.id,
@@ -462,6 +466,43 @@ class AgentTaskService:
     def _requires_approval(self, envelope: AgentTaskEnvelope) -> bool:
         return str(envelope.approval_policy.get("mode") or "none") == "required"
 
+    async def _find_duplicate_task(
+        self,
+        *,
+        request: AgentTaskCreateRequest,
+        task_class: TaskClass,
+    ) -> AgentTaskRead | None:
+        metadata = request.metadata or {}
+        idempotency_key = str(metadata.get("idempotency_key") or "").strip()
+        if not idempotency_key:
+            return None
+
+        window_seconds = _coerce_idempotency_window_seconds(
+            metadata.get("idempotency_window_seconds")
+        )
+        cutoff = datetime.now(UTC) - timedelta(seconds=window_seconds)
+        recent_steps = await self._run_service.list_recent_steps(limit=50)
+
+        for step in recent_steps:
+            if step.created_at < cutoff:
+                continue
+            input_json = step.input_json or {}
+            step_metadata = input_json.get("metadata") or {}
+            if str(step_metadata.get("idempotency_key") or "").strip() != idempotency_key:
+                continue
+            if input_json.get("user_prompt") != request.prompt:
+                continue
+            if input_json.get("public_agent_id") != request.public_agent_id:
+                continue
+            if input_json.get("runtime_key") != request.runtime_key:
+                continue
+            if input_json.get("target_repo") != request.repo:
+                continue
+            if step.step_type != task_class.value:
+                continue
+            return await self._build_task_read(step.run_id)
+        return None
+
 
 def build_agent_task_service(
     *,
@@ -485,3 +526,11 @@ def _pending_approval_for_task(task: AgentTaskRead):
         if approval.status in {"pending", "requested"}:
             return approval
     return None
+
+
+def _coerce_idempotency_window_seconds(value) -> int:
+    try:
+        seconds = int(value)
+    except (TypeError, ValueError):
+        return 60
+    return max(5, min(seconds, 3600))

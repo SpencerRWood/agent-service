@@ -216,6 +216,9 @@ def test_chat_completion_dispatches_selected_agent_id_to_task_runtime():
     assert task_store.created_requests[0].runtime_key == "coding_runtime"
     assert task_store.created_requests[0].task_class.value == "implement"
     assert task_store.created_requests[0].wait_for_completion is False
+    assert task_store.created_requests[0].metadata["idempotency_scope"] == "content_window"
+    assert task_store.created_requests[0].metadata["idempotency_window_seconds"] == 45
+    assert task_store.created_requests[0].metadata["idempotency_key"]
     assert response.json()["task"]["state"] == "completed"
 
 
@@ -301,3 +304,24 @@ def test_streaming_chat_completion_emits_task_metadata_and_done_marker():
     assert "chat.completion.chunk" in body
     assert '"id": "task-1"' in body
     assert "[DONE]" in body
+
+
+def test_chat_completion_prefers_request_identifiers_for_idempotency():
+    task_store = FakeTaskStore()
+    client = build_client(task_store)
+
+    response = client.post(
+        "/api/v1/chat/completions",
+        json={
+            "model": "planner",
+            "messages": [{"role": "user", "content": "Plan the rollout."}],
+            "metadata": {
+                "conversation_id": "conv-123",
+                "message_id": "msg-456",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert task_store.created_requests[0].metadata["idempotency_scope"] == "request_identifiers"
+    assert task_store.created_requests[0].metadata["idempotency_window_seconds"] == 900

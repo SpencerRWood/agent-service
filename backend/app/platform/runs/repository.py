@@ -45,3 +45,9 @@ class RunRepository:
             .order_by(RunStep.sequence_index.asc(), RunStep.created_at.asc())
         )
         return result.scalars().all()
+
+    async def list_recent_steps(self, *, limit: int = 50) -> Sequence[RunStep]:
+        result = await self._session.execute(
+            select(RunStep).order_by(RunStep.created_at.desc()).limit(limit)
+        )
+        return result.scalars().all()
