@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
@@ -19,6 +20,8 @@ from app.platform.agent_tasks.schemas import (
     AgentTaskProgressCreate,
     AgentTaskRead,
     AgentTaskResult,
+    PublicAgentTaskSummaryListRead,
+    PublicAgentTaskSummaryRead,
     TaskClass,
     TaskState,
     WorkerDispatchDecision,
@@ -56,10 +59,28 @@ class AgentTaskService:
 
     async def create_task(self, request: AgentTaskCreateRequest) -> AgentTaskCreateResponse:
         task_class = request.task_class or classify_task(request.prompt)
-        duplicate_task = await self._find_duplicate_task(request=request, task_class=task_class)
+        idempotency_key = _extract_idempotency_key(request.metadata)
+        duplicate_task = await self._find_duplicate_task(
+            request=request,
+            task_class=task_class,
+            idempotency_key=idempotency_key,
+        )
         if duplicate_task is not None:
             return AgentTaskCreateResponse(task=duplicate_task)
-        run = await self._run_service.create_run(RunCreate(status=TaskState.QUEUED.value))
+        run, created_new = await self._run_service.create_or_get_run(
+            RunCreate(
+                status=TaskState.QUEUED.value,
+                idempotency_key=idempotency_key,
+            )
+        )
+        if idempotency_key and not created_new:
+            existing_task = await self._wait_for_existing_task_read(
+                run_id=run.id,
+                request=request,
+                task_class=task_class,
+            )
+            if existing_task is not None:
+                return AgentTaskCreateResponse(task=existing_task)
         step = await self._run_service.create_step(
             run.id,
             RunStepCreate(
@@ -186,6 +207,19 @@ class AgentTaskService:
 
     async def get_task(self, task_id: str) -> AgentTaskRead:
         return await self._build_task_read(task_id)
+
+    async def list_public_tasks(self, *, limit: int = 25) -> PublicAgentTaskSummaryListRead:
+        runs = await self._run_service.list_recent_runs(limit=limit)
+        items = []
+        for run in runs:
+            try:
+                task = await self._build_task_read(run.id)
+            except HTTPException as exc:
+                if exc.status_code == status.HTTP_404_NOT_FOUND:
+                    continue
+                raise
+            items.append(_to_public_task_summary(task))
+        return PublicAgentTaskSummaryListRead(items=items)
 
     async def approve_task(
         self,
@@ -471,18 +505,25 @@ class AgentTaskService:
         *,
         request: AgentTaskCreateRequest,
         task_class: TaskClass,
+        idempotency_key: str | None,
     ) -> AgentTaskRead | None:
-        metadata = request.metadata or {}
-        idempotency_key = str(metadata.get("idempotency_key") or "").strip()
         if not idempotency_key:
             return None
 
+        existing_run = await self._run_service.get_run_by_idempotency_key(idempotency_key)
+        if existing_run is not None:
+            return await self._wait_for_existing_task_read(
+                run_id=existing_run.id,
+                request=request,
+                task_class=task_class,
+            )
+
+        metadata = request.metadata or {}
         window_seconds = _coerce_idempotency_window_seconds(
             metadata.get("idempotency_window_seconds")
         )
         cutoff = datetime.now(UTC) - timedelta(seconds=window_seconds)
         recent_steps = await self._run_service.list_recent_steps(limit=50)
-
         for step in recent_steps:
             if step.created_at < cutoff:
                 continue
@@ -501,6 +542,27 @@ class AgentTaskService:
             if step.step_type != task_class.value:
                 continue
             return await self._build_task_read(step.run_id)
+        return None
+
+    async def _wait_for_existing_task_read(
+        self,
+        *,
+        run_id: str,
+        request: AgentTaskCreateRequest,
+        task_class: TaskClass,
+    ) -> AgentTaskRead | None:
+        for _attempt in range(10):
+            try:
+                task = await self._build_task_read(run_id)
+            except HTTPException as exc:
+                if exc.status_code != status.HTTP_404_NOT_FOUND:
+                    raise
+                task = None
+            if task is not None and _task_matches_request(
+                task, request=request, task_class=task_class
+            ):
+                return task
+            await asyncio.sleep(0.05)
         return None
 
 
@@ -534,3 +596,69 @@ def _coerce_idempotency_window_seconds(value) -> int:
     except (TypeError, ValueError):
         return 60
     return max(5, min(seconds, 3600))
+
+
+def _extract_idempotency_key(metadata: dict | None) -> str | None:
+    if not metadata:
+        return None
+    normalized = str(metadata.get("idempotency_key") or "").strip()
+    return normalized or None
+
+
+def _task_matches_request(
+    task: AgentTaskRead,
+    *,
+    request: AgentTaskCreateRequest,
+    task_class: TaskClass,
+) -> bool:
+    return (
+        task.envelope.user_prompt == request.prompt
+        and task.envelope.public_agent_id == request.public_agent_id
+        and task.envelope.runtime_key == request.runtime_key
+        and task.envelope.target_repo == request.repo
+        and task.envelope.task_class == task_class
+    )
+
+
+def _to_public_task_summary(task: AgentTaskRead) -> PublicAgentTaskSummaryRead:
+    approval_pending = any(
+        approval.status in {"pending", "requested"} for approval in task.approvals
+    )
+    completed_at = (
+        task.result.completed_at
+        if task.result is not None and task.result.completed_at is not None
+        else task.job.completed_at
+        if task.job is not None
+        else task.run.completed_at
+    )
+    duration_seconds = None
+    if completed_at is not None:
+        duration_seconds = max((completed_at - task.run.created_at).total_seconds(), 0.0)
+    last_event_message = None
+    for event in reversed(task.events):
+        message = str(event.payload_json.get("message") or "").strip()
+        if message:
+            last_event_message = message
+            break
+    return PublicAgentTaskSummaryRead(
+        task_id=task.task_id,
+        agent_id=task.envelope.public_agent_id,
+        runtime_key=task.envelope.runtime_key,
+        task_class=task.envelope.task_class.value,
+        state="pending_approval" if approval_pending else task.state.value,
+        approval_pending=approval_pending,
+        summary=task.result.summary if task.result is not None else None,
+        prompt=task.envelope.user_prompt,
+        execution_mode=task.envelope.execution_mode.value,
+        preferred_backend=task.envelope.preferred_backend.value
+        if task.envelope.preferred_backend is not None
+        else None,
+        selected_backend=task.result.backend.value if task.result and task.result.backend else None,
+        target_id=task.envelope.dispatch.target_id,
+        route_profile=task.envelope.dispatch.route_profile,
+        created_at=task.run.created_at,
+        completed_at=completed_at,
+        duration_seconds=duration_seconds,
+        last_event_message=last_event_message,
+        stream_url=f"/api/agent-tasks/{task.task_id}/stream",
+    )

@@ -184,3 +184,28 @@ class PublicAgentTaskRead(BaseModel):
 class PublicTaskDecisionRequest(BaseModel):
     decided_by: str | None = None
     comment: str | None = None
+
+
+class PublicAgentTaskSummaryRead(BaseModel):
+    task_id: str
+    agent_id: str | None = None
+    runtime_key: str | None = None
+    task_class: str
+    state: str
+    approval_pending: bool = False
+    summary: str | None = None
+    prompt: str
+    execution_mode: str
+    preferred_backend: str | None = None
+    selected_backend: str | None = None
+    target_id: str | None = None
+    route_profile: str | None = None
+    created_at: datetime
+    completed_at: datetime | None = None
+    duration_seconds: float | None = None
+    last_event_message: str | None = None
+    stream_url: str
+
+
+class PublicAgentTaskSummaryListRead(BaseModel):
+    items: list[PublicAgentTaskSummaryRead] = Field(default_factory=list)

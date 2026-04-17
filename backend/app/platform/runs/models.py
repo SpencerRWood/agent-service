@@ -13,6 +13,9 @@ class Run(Base):
     __tablename__ = "platform_runs"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    idempotency_key: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, unique=True, index=True
+    )
     prompt_id: Mapped[str | None] = mapped_column(
         ForeignKey("platform_prompts.id"), nullable=True, index=True
     )

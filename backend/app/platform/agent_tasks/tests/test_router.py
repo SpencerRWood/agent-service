@@ -13,6 +13,7 @@ from app.platform.agent_tasks.schemas import (
     BackendName,
     ExecutionMode,
     PublicAgentTaskRead,
+    PublicAgentTaskSummaryListRead,
     TaskState,
     WorkerDispatchDecision,
 )
@@ -37,6 +38,34 @@ class FakeTaskStore(TaskStore):
 
     async def get_public_task(self, task_id: str) -> PublicAgentTaskRead:
         return to_public_task(await self.get_task(task_id))
+
+    async def list_public_tasks(self, *, limit: int = 25) -> PublicAgentTaskSummaryListRead:
+        del limit
+        public_task = to_public_task(self.task)
+        return PublicAgentTaskSummaryListRead(
+            items=[
+                {
+                    "task_id": self.task.task_id,
+                    "agent_id": self.task.envelope.public_agent_id,
+                    "runtime_key": self.task.envelope.runtime_key,
+                    "task_class": self.task.envelope.task_class.value,
+                    "state": public_task.state,
+                    "approval_pending": public_task.approval_pending,
+                    "summary": None,
+                    "prompt": self.task.envelope.user_prompt,
+                    "execution_mode": self.task.envelope.execution_mode.value,
+                    "preferred_backend": self.task.envelope.preferred_backend.value,
+                    "selected_backend": None,
+                    "target_id": self.task.envelope.dispatch.target_id,
+                    "route_profile": self.task.envelope.dispatch.route_profile,
+                    "created_at": self.task.run.created_at,
+                    "completed_at": None,
+                    "duration_seconds": None,
+                    "last_event_message": "Waiting for approval.",
+                    "stream_url": public_task.links.stream_url,
+                }
+            ]
+        )
 
     async def approve_task(
         self,
@@ -206,6 +235,19 @@ def test_get_agent_task_returns_compact_public_view():
     assert payload["state"] == "pending_approval"
     assert payload["approval_pending"] is True
     assert payload["links"]["approve_url"] == "/api/agent-tasks/task-1/approve"
+
+
+def test_list_agent_tasks_returns_recent_summaries():
+    client = build_client()
+
+    response = client.get("/api/agent-tasks/")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload["items"]) == 1
+    assert payload["items"][0]["agent_id"] == "reviewer"
+    assert payload["items"][0]["target_id"] == "mbp-primary"
+    assert payload["items"][0]["stream_url"] == "/api/agent-tasks/task-1/stream"
 
 
 def test_approve_agent_task_returns_updated_public_view():

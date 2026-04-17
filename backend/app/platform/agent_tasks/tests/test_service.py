@@ -32,12 +32,23 @@ class FakeRunService:
         self.recent_steps: list[RunStepRead] = []
 
     async def create_run(self, request):
-        del request
-        self.create_run_calls += 1
-        run_id = f"task-{self.create_run_calls}"
-        run = _build_run_read(run_id, status="queued")
-        self.runs[run_id] = run
+        run, _created = await self.create_or_get_run(request)
         return run
+
+    async def create_or_get_run(self, request):
+        self.create_run_calls += 1
+        if request.idempotency_key:
+            for run in self.runs.values():
+                if run.idempotency_key == request.idempotency_key:
+                    return run, False
+        run_id = f"task-{self.create_run_calls}"
+        run = _build_run_read(
+            run_id,
+            status="queued",
+            idempotency_key=request.idempotency_key,
+        )
+        self.runs[run_id] = run
+        return run, True
 
     async def create_step(self, run_id, request):
         self.create_step_calls += 1
@@ -53,6 +64,12 @@ class FakeRunService:
 
     async def get_run(self, run_id):
         return self.runs[run_id]
+
+    async def get_run_by_idempotency_key(self, idempotency_key):
+        for run in self.runs.values():
+            if run.idempotency_key == idempotency_key:
+                return run
+        return None
 
     async def list_steps(self, run_id):
         return self.steps_by_run[run_id]
@@ -319,10 +336,11 @@ def test_create_task_reuses_recent_duplicate_by_idempotency_key():
     assert run_service.create_run_calls == 0
 
 
-def _build_run_read(run_id: str, *, status: str) -> RunRead:
+def _build_run_read(run_id: str, *, status: str, idempotency_key: str | None = None) -> RunRead:
     now = datetime.now(UTC).isoformat()
     return RunRead(
         id=run_id,
+        idempotency_key=idempotency_key,
         prompt_id=None,
         intent_id=None,
         status=status,

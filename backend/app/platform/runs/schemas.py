@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class RunCreate(BaseModel):
+    idempotency_key: str | None = None
     prompt_id: str | None = None
     intent_id: str | None = None
     status: str = "created"
@@ -16,6 +17,7 @@ class RunRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: str
+    idempotency_key: str | None = None
     prompt_id: str | None = None
     intent_id: str | None = None
     status: str

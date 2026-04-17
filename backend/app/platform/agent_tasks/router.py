@@ -14,6 +14,7 @@ from app.platform.agent_tasks.schemas import (
     AgentTaskCreateResponse,
     AgentTaskProgressCreate,
     PublicAgentTaskRead,
+    PublicAgentTaskSummaryListRead,
     PublicTaskDecisionRequest,
     TaskState,
 )
@@ -47,6 +48,14 @@ async def create_agent_task(
     service: AgentTaskService = Depends(get_agent_task_service),
 ) -> AgentTaskCreateResponse:
     return await service.create_task(request)
+
+
+@router.get("/", response_model=PublicAgentTaskSummaryListRead)
+async def list_agent_tasks(
+    limit: int = 25,
+    task_store: TaskStore = Depends(get_task_store),
+) -> PublicAgentTaskSummaryListRead:
+    return await task_store.list_public_tasks(limit=max(1, min(limit, 100)))
 
 
 @router.get("/{task_id}", response_model=PublicAgentTaskRead)
