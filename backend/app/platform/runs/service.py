@@ -43,6 +43,10 @@ class RunService:
         steps = await self._repository.list_steps(run_id)
         return [RunStepRead.model_validate(step) for step in steps]
 
+    async def list_recent_steps(self, *, limit: int = 50) -> list[RunStepRead]:
+        steps = await self._repository.list_recent_steps(limit=limit)
+        return [RunStepRead.model_validate(step) for step in steps]
+
     async def update_run_status(self, run_id: str, status_value: str) -> RunRead:
         run = await self._repository.get_run(run_id)
         if run is None:

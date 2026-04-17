@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from collections.abc import AsyncIterator
 
@@ -45,6 +46,7 @@ class OpenAICompatService:
         agent = self._agent_registry.get_agent(request.model)
         runtime = self._runtime_registry.get_runtime(agent.runtime)
         prompt = _messages_to_prompt(request.messages, runtime.prompt_preamble)
+        metadata = _build_idempotency_metadata(request=request, prompt=prompt)
         task_response = await self._task_store.create_task(
             AgentTaskCreateRequest(
                 task_class=runtime.task_class,
@@ -54,7 +56,7 @@ class OpenAICompatService:
                 route_profile=runtime.route_profile,
                 approval_policy={"mode": runtime.approval_mode},
                 metadata={
-                    **request.metadata,
+                    **metadata,
                     "openai_model": agent.id,
                     "runtime_key": runtime.key,
                 },
@@ -166,6 +168,65 @@ def _messages_to_prompt(messages, prompt_preamble: str | None) -> str:
             content = json.dumps(message.content)
         rendered.append(f"{message.role.upper()}:\n{content}")
     return "\n\n".join(rendered).strip()
+
+
+def _build_idempotency_metadata(
+    *,
+    request: ChatCompletionRequest,
+    prompt: str,
+) -> dict:
+    metadata = dict(request.metadata)
+    fingerprint_payload = {
+        "model": request.model,
+        "messages": [
+            {"role": message.role, "content": message.content} for message in request.messages
+        ],
+        "prompt": prompt,
+    }
+    content_fingerprint = hashlib.sha256(
+        json.dumps(fingerprint_payload, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()
+
+    source_identifiers = _extract_idempotency_identifiers(metadata)
+    if source_identifiers:
+        scope = "request_identifiers"
+        key_material = {"model": request.model, "identifiers": source_identifiers}
+        window_seconds = 900
+    else:
+        scope = "content_window"
+        key_material = {"model": request.model, "content_fingerprint": content_fingerprint}
+        window_seconds = 45
+
+    metadata["idempotency_scope"] = scope
+    metadata["idempotency_key"] = hashlib.sha256(
+        json.dumps(key_material, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    metadata["idempotency_window_seconds"] = window_seconds
+    metadata["request_fingerprint"] = content_fingerprint
+    return metadata
+
+
+def _extract_idempotency_identifiers(metadata: dict) -> dict[str, str]:
+    identifiers: dict[str, str] = {}
+    for key in (
+        "request_id",
+        "requestId",
+        "message_id",
+        "messageId",
+        "conversation_id",
+        "conversationId",
+        "chat_id",
+        "chatId",
+        "session_id",
+        "sessionId",
+    ):
+        value = metadata.get(key)
+        if value is None:
+            continue
+        normalized = str(value).strip()
+        if normalized:
+            identifiers[key] = normalized
+    return identifiers
 
 
 def _task_payload(task) -> dict:
