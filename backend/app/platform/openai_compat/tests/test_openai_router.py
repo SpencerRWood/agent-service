@@ -215,6 +215,7 @@ def test_chat_completion_dispatches_selected_agent_id_to_task_runtime():
     assert task_store.created_requests[0].public_agent_id == "coder"
     assert task_store.created_requests[0].runtime_key == "coding_runtime"
     assert task_store.created_requests[0].task_class.value == "implement"
+    assert task_store.created_requests[0].wait_for_completion is False
     assert response.json()["task"]["state"] == "completed"
 
 
