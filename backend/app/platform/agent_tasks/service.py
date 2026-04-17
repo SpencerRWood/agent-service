@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
@@ -56,10 +57,28 @@ class AgentTaskService:
 
     async def create_task(self, request: AgentTaskCreateRequest) -> AgentTaskCreateResponse:
         task_class = request.task_class or classify_task(request.prompt)
-        duplicate_task = await self._find_duplicate_task(request=request, task_class=task_class)
+        idempotency_key = _extract_idempotency_key(request.metadata)
+        duplicate_task = await self._find_duplicate_task(
+            request=request,
+            task_class=task_class,
+            idempotency_key=idempotency_key,
+        )
         if duplicate_task is not None:
             return AgentTaskCreateResponse(task=duplicate_task)
-        run = await self._run_service.create_run(RunCreate(status=TaskState.QUEUED.value))
+        run, created_new = await self._run_service.create_or_get_run(
+            RunCreate(
+                status=TaskState.QUEUED.value,
+                idempotency_key=idempotency_key,
+            )
+        )
+        if idempotency_key and not created_new:
+            existing_task = await self._wait_for_existing_task_read(
+                run_id=run.id,
+                request=request,
+                task_class=task_class,
+            )
+            if existing_task is not None:
+                return AgentTaskCreateResponse(task=existing_task)
         step = await self._run_service.create_step(
             run.id,
             RunStepCreate(
@@ -471,18 +490,25 @@ class AgentTaskService:
         *,
         request: AgentTaskCreateRequest,
         task_class: TaskClass,
+        idempotency_key: str | None,
     ) -> AgentTaskRead | None:
-        metadata = request.metadata or {}
-        idempotency_key = str(metadata.get("idempotency_key") or "").strip()
         if not idempotency_key:
             return None
 
+        existing_run = await self._run_service.get_run_by_idempotency_key(idempotency_key)
+        if existing_run is not None:
+            return await self._wait_for_existing_task_read(
+                run_id=existing_run.id,
+                request=request,
+                task_class=task_class,
+            )
+
+        metadata = request.metadata or {}
         window_seconds = _coerce_idempotency_window_seconds(
             metadata.get("idempotency_window_seconds")
         )
         cutoff = datetime.now(UTC) - timedelta(seconds=window_seconds)
         recent_steps = await self._run_service.list_recent_steps(limit=50)
-
         for step in recent_steps:
             if step.created_at < cutoff:
                 continue
@@ -501,6 +527,27 @@ class AgentTaskService:
             if step.step_type != task_class.value:
                 continue
             return await self._build_task_read(step.run_id)
+        return None
+
+    async def _wait_for_existing_task_read(
+        self,
+        *,
+        run_id: str,
+        request: AgentTaskCreateRequest,
+        task_class: TaskClass,
+    ) -> AgentTaskRead | None:
+        for _attempt in range(10):
+            try:
+                task = await self._build_task_read(run_id)
+            except HTTPException as exc:
+                if exc.status_code != status.HTTP_404_NOT_FOUND:
+                    raise
+                task = None
+            if task is not None and _task_matches_request(
+                task, request=request, task_class=task_class
+            ):
+                return task
+            await asyncio.sleep(0.05)
         return None
 
 
@@ -534,3 +581,25 @@ def _coerce_idempotency_window_seconds(value) -> int:
     except (TypeError, ValueError):
         return 60
     return max(5, min(seconds, 3600))
+
+
+def _extract_idempotency_key(metadata: dict | None) -> str | None:
+    if not metadata:
+        return None
+    normalized = str(metadata.get("idempotency_key") or "").strip()
+    return normalized or None
+
+
+def _task_matches_request(
+    task: AgentTaskRead,
+    *,
+    request: AgentTaskCreateRequest,
+    task_class: TaskClass,
+) -> bool:
+    return (
+        task.envelope.user_prompt == request.prompt
+        and task.envelope.public_agent_id == request.public_agent_id
+        and task.envelope.runtime_key == request.runtime_key
+        and task.envelope.target_repo == request.repo
+        and task.envelope.task_class == task_class
+    )

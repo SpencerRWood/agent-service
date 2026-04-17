@@ -1,4 +1,5 @@
 from fastapi import HTTPException, status
+from sqlalchemy.exc import IntegrityError
 
 from app.platform.runs.models import Run, RunStep
 from app.platform.runs.repository import RunRepository
@@ -10,14 +11,37 @@ class RunService:
         self._repository = repository
 
     async def create_run(self, request: RunCreate) -> RunRead:
-        run = Run(prompt_id=request.prompt_id, intent_id=request.intent_id, status=request.status)
-        created = await self._repository.create_run(run)
-        return RunRead.model_validate(created)
+        run, _created = await self.create_or_get_run(request)
+        return run
+
+    async def create_or_get_run(self, request: RunCreate) -> tuple[RunRead, bool]:
+        run = Run(
+            idempotency_key=request.idempotency_key,
+            prompt_id=request.prompt_id,
+            intent_id=request.intent_id,
+            status=request.status,
+        )
+        try:
+            created = await self._repository.create_run(run)
+        except IntegrityError:
+            if request.idempotency_key is None:
+                raise
+            existing = await self._repository.get_run_by_idempotency_key(request.idempotency_key)
+            if existing is None:
+                raise
+            return RunRead.model_validate(existing), False
+        return RunRead.model_validate(created), True
 
     async def get_run(self, run_id: str) -> RunRead:
         run = await self._repository.get_run(run_id)
         if run is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+        return RunRead.model_validate(run)
+
+    async def get_run_by_idempotency_key(self, idempotency_key: str) -> RunRead | None:
+        run = await self._repository.get_run_by_idempotency_key(idempotency_key)
+        if run is None:
+            return None
         return RunRead.model_validate(run)
 
     async def create_step(self, run_id: str, request: RunStepCreate) -> RunStepRead:

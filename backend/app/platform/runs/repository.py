@@ -1,6 +1,7 @@
 from collections.abc import Sequence
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.platform.runs.models import Run, RunStep
@@ -12,12 +13,22 @@ class RunRepository:
 
     async def create_run(self, run: Run) -> Run:
         self._session.add(run)
-        await self._session.commit()
+        try:
+            await self._session.commit()
+        except IntegrityError:
+            await self._session.rollback()
+            raise
         await self._session.refresh(run)
         return run
 
     async def get_run(self, run_id: str) -> Run | None:
         return await self._session.get(Run, run_id)
+
+    async def get_run_by_idempotency_key(self, idempotency_key: str) -> Run | None:
+        result = await self._session.execute(
+            select(Run).where(Run.idempotency_key == idempotency_key)
+        )
+        return result.scalar_one_or_none()
 
     async def create_step(self, step: RunStep) -> RunStep:
         self._session.add(step)
