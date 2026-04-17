@@ -10,6 +10,7 @@ from app.platform.agent_tasks.schemas import (
     AgentTaskCreateRequest,
     AgentTaskRead,
     PublicAgentTaskRead,
+    PublicAgentTaskSummaryListRead,
     PublicTaskActionLinks,
 )
 from app.platform.agent_tasks.service import AgentTaskService, build_agent_task_service
@@ -51,6 +52,9 @@ class TaskStore:
 
     async def get_public_task(self, task_id: str) -> PublicAgentTaskRead:
         return to_public_task(await self.get_task(task_id))
+
+    async def list_public_tasks(self, *, limit: int = 25) -> PublicAgentTaskSummaryListRead:
+        return await self._service.list_public_tasks(limit=limit)
 
 
 def to_public_task(task: AgentTaskRead) -> PublicAgentTaskRead:

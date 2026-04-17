@@ -20,6 +20,8 @@ from app.platform.agent_tasks.schemas import (
     AgentTaskProgressCreate,
     AgentTaskRead,
     AgentTaskResult,
+    PublicAgentTaskSummaryListRead,
+    PublicAgentTaskSummaryRead,
     TaskClass,
     TaskState,
     WorkerDispatchDecision,
@@ -205,6 +207,19 @@ class AgentTaskService:
 
     async def get_task(self, task_id: str) -> AgentTaskRead:
         return await self._build_task_read(task_id)
+
+    async def list_public_tasks(self, *, limit: int = 25) -> PublicAgentTaskSummaryListRead:
+        runs = await self._run_service.list_recent_runs(limit=limit)
+        items = []
+        for run in runs:
+            try:
+                task = await self._build_task_read(run.id)
+            except HTTPException as exc:
+                if exc.status_code == status.HTTP_404_NOT_FOUND:
+                    continue
+                raise
+            items.append(_to_public_task_summary(task))
+        return PublicAgentTaskSummaryListRead(items=items)
 
     async def approve_task(
         self,
@@ -602,4 +617,48 @@ def _task_matches_request(
         and task.envelope.runtime_key == request.runtime_key
         and task.envelope.target_repo == request.repo
         and task.envelope.task_class == task_class
+    )
+
+
+def _to_public_task_summary(task: AgentTaskRead) -> PublicAgentTaskSummaryRead:
+    approval_pending = any(
+        approval.status in {"pending", "requested"} for approval in task.approvals
+    )
+    completed_at = (
+        task.result.completed_at
+        if task.result is not None and task.result.completed_at is not None
+        else task.job.completed_at
+        if task.job is not None
+        else task.run.completed_at
+    )
+    duration_seconds = None
+    if completed_at is not None:
+        duration_seconds = max((completed_at - task.run.created_at).total_seconds(), 0.0)
+    last_event_message = None
+    for event in reversed(task.events):
+        message = str(event.payload_json.get("message") or "").strip()
+        if message:
+            last_event_message = message
+            break
+    return PublicAgentTaskSummaryRead(
+        task_id=task.task_id,
+        agent_id=task.envelope.public_agent_id,
+        runtime_key=task.envelope.runtime_key,
+        task_class=task.envelope.task_class.value,
+        state="pending_approval" if approval_pending else task.state.value,
+        approval_pending=approval_pending,
+        summary=task.result.summary if task.result is not None else None,
+        prompt=task.envelope.user_prompt,
+        execution_mode=task.envelope.execution_mode.value,
+        preferred_backend=task.envelope.preferred_backend.value
+        if task.envelope.preferred_backend is not None
+        else None,
+        selected_backend=task.result.backend.value if task.result and task.result.backend else None,
+        target_id=task.envelope.dispatch.target_id,
+        route_profile=task.envelope.dispatch.route_profile,
+        created_at=task.run.created_at,
+        completed_at=completed_at,
+        duration_seconds=duration_seconds,
+        last_event_message=last_event_message,
+        stream_url=f"/api/agent-tasks/{task.task_id}/stream",
     )

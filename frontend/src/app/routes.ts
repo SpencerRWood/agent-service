@@ -2,6 +2,7 @@ import type { ComponentType } from "react"
 
 import ExecutionTargetsPage from "@/pages/execution-targets/page"
 import HomePage from "@/pages/home/page"
+import TasksPage from "@/pages/tasks/page"
 
 export type AppRoute = {
   path: string
@@ -21,6 +22,12 @@ export const appRoutes: AppRoute[] = [
     path: "/execution-targets",
     label: "Execution Targets",
     component: ExecutionTargetsPage,
+    showInNav: true,
+  },
+  {
+    path: "/tasks",
+    label: "Tasks",
+    component: TasksPage,
     showInNav: true,
   },
 ]
