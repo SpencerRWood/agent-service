@@ -5,6 +5,7 @@ from app.platform.agents import catalog as catalog_module
 from app.platform.agents.catalog import (
     delete_agent_catalog_override,
     load_agent_catalog,
+    load_default_catalog_payload,
     load_effective_catalog_payload,
     save_agent_catalog_override_payload,
 )
@@ -56,6 +57,22 @@ def test_load_agent_catalog_falls_back_when_config_missing(tmp_path: Path):
     catalog = load_agent_catalog(tmp_path / "missing.json")
 
     assert [agent.id for agent in catalog.agents] == [
+        "planner",
+        "rag-analyst",
+        "coder",
+        "reviewer",
+    ]
+
+
+def test_load_default_catalog_payload_falls_back_to_builtins_when_file_missing(
+    tmp_path: Path, monkeypatch
+):
+    monkeypatch.setattr(catalog_module, "DEFAULT_CATALOG_PATH", tmp_path / "missing.yaml")
+    monkeypatch.setattr(catalog_module, "LEGACY_CATALOG_PATH", tmp_path / "missing.json")
+
+    payload = load_default_catalog_payload()
+
+    assert [agent["id"] for agent in payload["agents"]] == [
         "planner",
         "rag-analyst",
         "coder",

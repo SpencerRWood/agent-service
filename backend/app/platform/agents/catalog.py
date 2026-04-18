@@ -43,7 +43,14 @@ def load_default_agent_catalog() -> AgentCatalogDefinition:
 
 
 def load_default_catalog_payload() -> dict:
-    payload = _load_catalog_payload(_discover_catalog_path())
+    default_path = _discover_catalog_path()
+    if not default_path.exists():
+        logger.info(
+            "Agent catalog default config not found; using built-in defaults",
+            extra={"catalog_path": str(default_path)},
+        )
+        return DEFAULT_AGENT_CATALOG.model_dump(mode="json")
+    payload = _load_catalog_payload(default_path)
     if not isinstance(payload, dict):
         raise ValueError("Agent catalog default must be a mapping object.")
     return payload
