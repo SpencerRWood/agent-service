@@ -28,6 +28,9 @@ async def lifespan(_: FastAPI):
             "event": "application_startup",
             "environment": settings.environment,
             "version": settings.app_version,
+            "opencode_dry_run": settings.opencode_dry_run,
+            "opencode_command": settings.opencode_command,
+            "orchestration_dry_run": settings.orchestration_dry_run,
         },
     )
     yield
