@@ -102,6 +102,8 @@ class FakeTaskStore(TaskStore):
                 task_class=request.task_class,
                 public_agent_id=request.public_agent_id,
                 runtime_key=request.runtime_key,
+                agent_system_prompt=request.agent_system_prompt,
+                agent_workflow=request.agent_workflow,
                 target_repo=request.repo,
                 target_branch=request.target_branch,
                 execution_mode=request.execution_mode,
@@ -215,6 +217,11 @@ def test_chat_completion_dispatches_selected_agent_id_to_task_runtime():
     assert task_store.created_requests[0].public_agent_id == "coder"
     assert task_store.created_requests[0].runtime_key == "coding_runtime"
     assert task_store.created_requests[0].task_class.value == "implement"
+    assert task_store.created_requests[0].agent_system_prompt
+    assert task_store.created_requests[0].agent_workflow["entry_step"] == "implement-fixes"
+    assert (
+        task_store.created_requests[0].agent_workflow["steps"][0]["on_success"]["to"] == "reviewer"
+    )
     assert task_store.created_requests[0].wait_for_completion is False
     assert task_store.created_requests[0].metadata["idempotency_scope"] == "content_window"
     assert task_store.created_requests[0].metadata["idempotency_window_seconds"] == 45
@@ -238,7 +245,8 @@ def test_unknown_model_returns_not_found():
 
 
 def test_reviewer_agent_surfaces_pending_approval_state():
-    client = build_client(FakeTaskStore())
+    task_store = FakeTaskStore()
+    client = build_client(task_store)
 
     response = client.post(
         "/api/v1/chat/completions",
@@ -253,6 +261,12 @@ def test_reviewer_agent_surfaces_pending_approval_state():
     payload = response.json()
     assert payload["task"]["state"] == "pending_approval"
     assert payload["task"]["approve_url"] == "/api/agent-tasks/task-1/approve"
+    assert task_store.created_requests[0].agent_workflow["entry_step"] == "review"
+    assert task_store.created_requests[0].agent_workflow["steps"][0]["run"] == "pytest"
+    assert (
+        task_store.created_requests[0].agent_workflow["steps"][0]["on_needs_changes"]["to"]
+        == "coder"
+    )
     assert "requires approval" in payload["choices"][0]["message"]["content"]
 
 

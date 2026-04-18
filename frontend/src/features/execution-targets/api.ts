@@ -1,4 +1,4 @@
-import { API_BASE_URL } from "@/config/env"
+import { resolveApiUrl } from "@/config/env"
 
 export type ExecutionTarget = {
   id: string
@@ -45,7 +45,7 @@ export type ExecutionJob = {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
+  const response = await fetch(resolveApiUrl(path), {
     headers: {
       "Content-Type": "application/json",
       ...(init?.headers ?? {}),

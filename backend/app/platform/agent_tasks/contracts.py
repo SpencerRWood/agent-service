@@ -35,11 +35,13 @@ class ExecutorWorkPackage(BaseModel):
     repo: str
     runtime_key: str | None = None
     public_agent_id: str | None = None
+    agent_system_prompt: str | None = None
     project: ProjectContext | None = None
     branch_strategy: str
     instructions: str
     constraints: list[str] = Field(default_factory=list)
     acceptance_criteria: list[str] = Field(default_factory=list)
+    workflow: dict[str, Any] = Field(default_factory=dict)
     source_metadata: dict[str, Any] = Field(default_factory=dict)
 
 

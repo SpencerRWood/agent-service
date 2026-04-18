@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react"
 
-import { API_BASE_URL } from "@/config/env"
+import { resolveApiUrl } from "@/config/env"
 import { listAgentTasks, type AgentTaskSummary } from "@/features/tasks/api"
 
 const PROMPT_PREVIEW_LENGTH = 220
@@ -217,7 +217,7 @@ export default function TasksPage() {
               <div className="actions task-card__actions">
                 <a
                   className="button-link"
-                  href={`${API_BASE_URL}${task.stream_url}`}
+                  href={resolveApiUrl(task.stream_url)}
                   target="_blank"
                   rel="noreferrer"
                 >

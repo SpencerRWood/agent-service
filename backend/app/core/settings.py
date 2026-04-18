@@ -32,6 +32,10 @@ class Settings(BaseSettings):
     )
     app_host: str = Field(default="127.0.0.1", validation_alias="APP_HOST")
     app_port: int = Field(default=8000, validation_alias="APP_PORT")
+    agent_services_base_url: str | None = Field(
+        default=None,
+        validation_alias="AGENT_SERVICES_BASE_URL",
+    )
     control_hub_base_url: str = Field(
         default="https://control.woodhost.cloud/api",
         validation_alias=AliasChoices("AGENT_CONTROL_HUB_BASE_URL", "CONTROL_HUB_BASE_URL"),

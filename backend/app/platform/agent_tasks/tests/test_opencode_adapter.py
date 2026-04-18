@@ -108,3 +108,28 @@ def test_execute_prefers_explicit_text_parts_over_session_ids():
     )
 
     assert payload["summary"] == "adapter-ok"
+
+
+def test_execute_extracts_structured_workflow_outcome():
+    runner = FakeRunner(
+        [
+            CommandExecutionResult(
+                exit_code=0,
+                stdout=(
+                    '{"type":"message","message":{"content":"review finished"}}\n'
+                    '{"type":"result","workflow_outcome":"needs_changes"}\n'
+                ),
+                stderr="",
+            )
+        ]
+    )
+    adapter = OpenCodeCLIAdapter(command="/bin/echo", runner=runner)
+
+    payload = asyncio.run(
+        adapter.execute(
+            work_package=build_work_package(),
+            backend=BackendName.CODEX,
+        )
+    )
+
+    assert payload["workflow_outcome"] == "needs_changes"

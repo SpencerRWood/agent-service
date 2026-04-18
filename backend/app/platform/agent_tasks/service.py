@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 from fastapi import HTTPException, status
+from pydantic import ValidationError
 
+from app.core.settings import settings
 from app.platform.agent_tasks.enrichment import (
     EnrichmentTaskKind,
     classify_prompt_kind,
@@ -13,6 +17,8 @@ from app.platform.agent_tasks.enrichment import (
     extract_parent_task_id,
 )
 from app.platform.agent_tasks.runtime import (
+    OpenCodeProgressReporter,
+    OpenCodeRuntime,
     available_route_profiles,
     classify_task,
     default_allowed_backends_for_task,
@@ -26,12 +32,21 @@ from app.platform.agent_tasks.schemas import (
     AgentTaskProgressCreate,
     AgentTaskRead,
     AgentTaskResult,
+    BackendName,
     PublicAgentTaskSummaryListRead,
     PublicAgentTaskSummaryRead,
     TaskClass,
     TaskState,
     WorkerDispatchDecision,
+    WorkflowOutcome,
 )
+from app.platform.agents.schemas import (
+    AgentDefinition,
+    AgentWorkflowActionDefinition,
+    AgentWorkflowDefinition,
+    AgentWorkflowStepDefinition,
+)
+from app.platform.agents.service import AgentRegistry, RuntimeRegistry, get_runtime_registry
 from app.platform.approvals.repository import ApprovalRepository
 from app.platform.approvals.schemas import ApprovalDecisionCreate, ApprovalRequestCreate
 from app.platform.approvals.service import ApprovalService
@@ -56,12 +71,16 @@ class AgentTaskService:
         approval_service: ApprovalService,
         artifact_service: ArtifactService,
         execution_target_service: ExecutionTargetService,
+        agent_registry: AgentRegistry | None = None,
+        runtime_registry: RuntimeRegistry | None = None,
     ) -> None:
         self._run_service = run_service
         self._event_service = event_service
         self._approval_service = approval_service
         self._artifact_service = artifact_service
         self._execution_target_service = execution_target_service
+        self._runtime_registry = runtime_registry or get_runtime_registry()
+        self._agent_registry = agent_registry or AgentRegistry(self._runtime_registry)
 
     async def create_task(self, request: AgentTaskCreateRequest) -> AgentTaskCreateResponse:
         task_class = request.task_class or classify_task(request.prompt)
@@ -100,6 +119,8 @@ class AgentTaskService:
                     "target_branch": request.target_branch,
                     "public_agent_id": request.public_agent_id,
                     "runtime_key": request.runtime_key,
+                    "agent_system_prompt": request.agent_system_prompt,
+                    "agent_workflow": request.agent_workflow,
                     "metadata": request.metadata,
                 },
             ),
@@ -107,7 +128,11 @@ class AgentTaskService:
         correlation_id = str(uuid4())
         dispatch = await self._route_request(request=request, task_class=task_class)
         allowed_backends = request.allowed_backends or default_allowed_backends_for_task(task_class)
-        preferred_backend = request.backend or default_preferred_backend_for_task(task_class)
+        preferred_backend = (
+            request.backend
+            or _resolve_backend_from_hint(request.backend_hint, allowed_backends)
+            or default_preferred_backend_for_task(task_class)
+        )
         if preferred_backend not in allowed_backends:
             preferred_backend = allowed_backends[0]
 
@@ -121,6 +146,8 @@ class AgentTaskService:
             task_class=task_class,
             public_agent_id=request.public_agent_id,
             runtime_key=request.runtime_key,
+            agent_system_prompt=request.agent_system_prompt,
+            agent_workflow=request.agent_workflow,
             target_repo=request.repo,
             target_branch=request.target_branch,
             execution_mode=request.execution_mode,
@@ -201,6 +228,33 @@ class AgentTaskService:
                     actor_type="broker",
                     actor_id="agent-services",
                     trace_id=correlation_id,
+                )
+            )
+        elif (
+            envelope.execution_mode.value == "opencode"
+            and envelope.task_class == TaskClass.PLAN_ONLY
+        ):
+            reporter = OpenCodeProgressReporter(
+                task_id=envelope.task_id,
+                run_id=envelope.run_id,
+                step_id=envelope.step_id,
+                correlation_id=envelope.correlation_id,
+                base_url=settings.agent_services_base_url
+                or f"http://{settings.app_host}:{settings.app_port}",
+            )
+            runtime = OpenCodeRuntime.from_settings()
+            result = await runtime.execute(envelope, reporter)
+            await self._run_service.update_run_status(envelope.task_id, TaskState.COMPLETED.value)
+            await self._run_service.update_step_status(
+                envelope.step_id,
+                status_value=TaskState.COMPLETED.value,
+                output={"result": result.model_dump(mode="json")},
+            )
+            return AgentTaskCreateResponse(
+                task=await self._build_task_read(
+                    envelope.task_id,
+                    envelope=envelope,
+                    job=None,
                 )
             )
         else:
@@ -400,6 +454,54 @@ class AgentTaskService:
             )
         )
 
+    async def handle_completed_job(
+        self,
+        *,
+        task_id: str,
+        result_payload: dict,
+    ) -> AgentTaskRead | None:
+        try:
+            result = AgentTaskResult.model_validate(result_payload)
+        except ValidationError:
+            return None
+        if result.state != TaskState.COMPLETED:
+            return None
+
+        task = await self._build_task_read(task_id)
+        try:
+            transition_request = self._build_transition_request(task=task, result=result)
+        except HTTPException:
+            return None
+        if transition_request is None:
+            return None
+
+        follow_up = await self.create_task(transition_request)
+        await self._event_service.create(
+            EventCreate(
+                run_id=task.run.id,
+                run_step_id=task.step.id,
+                entity_type="agent_task",
+                entity_id=task.task_id,
+                event_type="agent.task.workflow.transitioned",
+                payload={
+                    "message": (
+                        f"Spawned follow-up task for {transition_request.public_agent_id} "
+                        f"from {task.envelope.public_agent_id or task.envelope.task_class.value}."
+                    ),
+                    "workflow_outcome": _classify_workflow_outcome(task=task, result=result),
+                    "source_task_id": task.task_id,
+                    "source_agent_id": task.envelope.public_agent_id,
+                    "target_task_id": follow_up.task.task_id,
+                    "target_agent_id": transition_request.public_agent_id,
+                    "target_runtime_key": transition_request.runtime_key,
+                },
+                actor_type="broker",
+                actor_id="agent-services",
+                trace_id=task.envelope.correlation_id,
+            )
+        )
+        return follow_up.task
+
     async def note_deferred(
         self,
         *,
@@ -579,6 +681,10 @@ class AgentTaskService:
                 continue
             if input_json.get("runtime_key") != request.runtime_key:
                 continue
+            if (input_json.get("agent_system_prompt") or None) != request.agent_system_prompt:
+                continue
+            if (input_json.get("agent_workflow") or {}) != request.agent_workflow:
+                continue
             if input_json.get("target_repo") != request.repo:
                 continue
             if step.step_type != task_class.value:
@@ -607,6 +713,90 @@ class AgentTaskService:
             await asyncio.sleep(0.05)
         return None
 
+    def _build_transition_request(
+        self,
+        *,
+        task: AgentTaskRead,
+        result: AgentTaskResult,
+    ) -> AgentTaskCreateRequest | None:
+        workflow = _workflow_from_payload(task.envelope.agent_workflow)
+        if workflow is None:
+            return None
+
+        current_step = _resolve_workflow_step(workflow=workflow, metadata=task.envelope.metadata)
+        if current_step is None:
+            return None
+
+        outcome = _classify_workflow_outcome(task=task, result=result)
+        transition = _transition_for_outcome(current_step=current_step, outcome=outcome)
+        if transition is None:
+            transition = _legacy_transition_from_workflow(workflow=workflow, outcome=outcome)
+        if transition is None or transition.action == "finish":
+            return None
+
+        if transition.action != "handoff":
+            return None
+
+        handoff_to = str(transition.to or "").strip()
+        if not handoff_to:
+            return None
+
+        max_iterations = _coerce_handoff_iterations(workflow.max_iterations)
+        current_iteration = _coerce_handoff_iterations(
+            task.envelope.metadata.get("workflow_iteration"),
+            default=0,
+        )
+        if current_iteration >= max_iterations:
+            return None
+
+        target_agent = self._agent_registry.get_agent(handoff_to)
+        target_runtime = self._runtime_registry.get_runtime(target_agent.runtime)
+        handoff_prompt = _build_handoff_prompt(
+            source_task=task,
+            result=result,
+            target_agent=target_agent,
+            transition=transition,
+        )
+        target_workflow = target_agent.workflow
+        metadata = {
+            **task.envelope.metadata,
+            "workflow_iteration": current_iteration + 1,
+            "workflow_origin_task_id": str(
+                task.envelope.metadata.get("workflow_origin_task_id") or task.task_id
+            ),
+            "workflow_previous_task_id": task.task_id,
+            "workflow_previous_agent_id": task.envelope.public_agent_id,
+            "handoff_parent_task_id": task.task_id,
+            "handoff_parent_agent_id": task.envelope.public_agent_id,
+            "handoff_target_agent_id": target_agent.id,
+            "handoff_trigger": "workflow_transition",
+            "workflow_step_id": _entry_step_id(target_workflow),
+        }
+        metadata["idempotency_scope"] = "workflow_handoff"
+        metadata["idempotency_key"] = _handoff_idempotency_key(
+            workflow_origin_task_id=str(metadata["workflow_origin_task_id"]),
+            source_task_id=task.task_id,
+            target_agent_id=target_agent.id,
+            iteration=current_iteration + 1,
+        )
+        metadata["idempotency_window_seconds"] = 3600
+
+        return AgentTaskCreateRequest(
+            task_class=target_runtime.task_class,
+            public_agent_id=target_agent.id,
+            runtime_key=target_runtime.key,
+            agent_system_prompt=target_agent.system_prompt,
+            agent_workflow=target_workflow.model_dump(mode="json") if target_workflow else {},
+            prompt=handoff_prompt,
+            repo=task.envelope.target_repo,
+            target_branch=task.envelope.target_branch,
+            execution_mode=task.envelope.execution_mode,
+            route_profile=target_runtime.route_profile,
+            approval_policy={"mode": target_runtime.approval_mode},
+            metadata=metadata,
+            wait_for_completion=False,
+        )
+
 
 def build_agent_task_service(
     *,
@@ -615,6 +805,8 @@ def build_agent_task_service(
     approval_repository: ApprovalRepository,
     artifact_repository: ArtifactRepository,
     execution_target_service: ExecutionTargetService,
+    agent_registry: AgentRegistry | None = None,
+    runtime_registry: RuntimeRegistry | None = None,
 ) -> AgentTaskService:
     return AgentTaskService(
         run_service=RunService(run_repository),
@@ -622,6 +814,8 @@ def build_agent_task_service(
         approval_service=ApprovalService(approval_repository),
         artifact_service=ArtifactService(artifact_repository),
         execution_target_service=execution_target_service,
+        agent_registry=agent_registry,
+        runtime_registry=runtime_registry,
     )
 
 
@@ -647,6 +841,159 @@ def _extract_idempotency_key(metadata: dict | None) -> str | None:
     return normalized or None
 
 
+def _coerce_handoff_iterations(value, *, default: int = 1) -> int:
+    try:
+        iterations = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(0, iterations)
+
+
+def _handoff_idempotency_key(
+    *,
+    workflow_origin_task_id: str,
+    source_task_id: str,
+    target_agent_id: str,
+    iteration: int,
+) -> str:
+    key_material = {
+        "workflow_origin_task_id": workflow_origin_task_id,
+        "source_task_id": source_task_id,
+        "target_agent_id": target_agent_id,
+        "iteration": iteration,
+    }
+    return hashlib.sha256(json.dumps(key_material, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def _build_handoff_prompt(
+    *,
+    source_task: AgentTaskRead,
+    result: AgentTaskResult,
+    target_agent: AgentDefinition,
+    transition: AgentWorkflowActionDefinition,
+) -> str:
+    handoff_summary_prompt = str(transition.prompt or "").strip()
+    source_agent = source_task.envelope.public_agent_id or source_task.envelope.task_class.value
+    sections = [
+        f"Workflow handoff from {source_agent} to {target_agent.id}.",
+        f"Parent task ID: {source_task.task_id}",
+        f"Original request:\n{source_task.envelope.user_prompt}",
+        f"Previous result:\n{result.summary}",
+    ]
+    if handoff_summary_prompt:
+        sections.append(f"Handoff instructions:\n{handoff_summary_prompt}")
+    return "\n\n".join(sections).strip()
+
+
+def _workflow_from_payload(payload: dict) -> AgentWorkflowDefinition | None:
+    if not payload:
+        return None
+    try:
+        return AgentWorkflowDefinition.model_validate(payload)
+    except ValidationError:
+        return None
+
+
+def _entry_step_id(workflow: AgentWorkflowDefinition | None) -> str | None:
+    if workflow is None:
+        return None
+    if workflow.entry_step:
+        return workflow.entry_step
+    if workflow.steps:
+        return workflow.steps[0].id
+    return None
+
+
+def _resolve_workflow_step(
+    *,
+    workflow: AgentWorkflowDefinition,
+    metadata: dict,
+) -> AgentWorkflowStepDefinition | None:
+    step_id = str(metadata.get("workflow_step_id") or _entry_step_id(workflow) or "").strip()
+    if not step_id:
+        return None
+    for step in workflow.steps:
+        if step.id == step_id:
+            return step
+    return None
+
+
+def _transition_for_outcome(
+    *,
+    current_step: AgentWorkflowStepDefinition,
+    outcome: WorkflowOutcome,
+) -> AgentWorkflowActionDefinition | None:
+    if outcome == WorkflowOutcome.SUCCESS:
+        return current_step.on_success
+    if outcome == WorkflowOutcome.NEEDS_CHANGES:
+        return current_step.on_needs_changes or current_step.on_failure
+    return current_step.on_failure
+
+
+def _legacy_transition_from_workflow(
+    *,
+    workflow: AgentWorkflowDefinition,
+    outcome: WorkflowOutcome,
+) -> AgentWorkflowActionDefinition | None:
+    handoff_to = str(workflow.handoff_to or "").strip()
+    if outcome in {WorkflowOutcome.FAILURE, WorkflowOutcome.NEEDS_CHANGES} and handoff_to:
+        return AgentWorkflowActionDefinition(
+            action="handoff",
+            to=handoff_to,
+            prompt=workflow.handoff_summary_prompt,
+        )
+    return None
+
+
+def _classify_workflow_outcome(*, task: AgentTaskRead, result: AgentTaskResult) -> WorkflowOutcome:
+    if result.workflow_outcome is not None:
+        return result.workflow_outcome
+    if result.state != TaskState.COMPLETED:
+        return WorkflowOutcome.FAILURE
+
+    summary = (result.summary or "").lower()
+    failure_markers = (
+        "tests failed",
+        "test failed",
+        "failing",
+        "failed",
+        "error",
+        "errors",
+        "exception",
+        "regression",
+        "does not",
+        "did not",
+        "unable",
+        "fix needed",
+        "recommended fix",
+        "needs changes",
+    )
+    success_markers = (
+        "tests passed",
+        "all tests passed",
+        "validated successfully",
+        "review passed",
+        "no issues found",
+        "looks good",
+        "completed successfully",
+    )
+    if any(marker in summary for marker in success_markers):
+        return WorkflowOutcome.SUCCESS
+    needs_changes_markers = (
+        "needs changes",
+        "recommended fix",
+        "fix needed",
+        "follow-up implementation",
+    )
+    if any(marker in summary for marker in needs_changes_markers):
+        return WorkflowOutcome.NEEDS_CHANGES
+    if any(marker in summary for marker in failure_markers):
+        return WorkflowOutcome.FAILURE
+    if task.envelope.task_class == TaskClass.REVIEW:
+        return WorkflowOutcome.NEEDS_CHANGES
+    return WorkflowOutcome.SUCCESS
+
+
 def _task_matches_request(
     task: AgentTaskRead,
     *,
@@ -657,6 +1004,8 @@ def _task_matches_request(
         task.envelope.user_prompt == request.prompt
         and task.envelope.public_agent_id == request.public_agent_id
         and task.envelope.runtime_key == request.runtime_key
+        and task.envelope.agent_system_prompt == request.agent_system_prompt
+        and task.envelope.agent_workflow == request.agent_workflow
         and task.envelope.target_repo == request.repo
         and task.envelope.task_class == task_class
     )
@@ -708,3 +1057,16 @@ def _to_public_task_summary(task: AgentTaskRead) -> PublicAgentTaskSummaryRead:
         follow_ups=[],
         stream_url=f"/api/agent-tasks/{task.task_id}/stream",
     )
+
+
+def _resolve_backend_from_hint(
+    backend_hint: str | None,
+    allowed_backends: list[BackendName],
+) -> BackendName | None:
+    if not backend_hint:
+        return None
+    hint_lower = backend_hint.lower().strip()
+    for backend in allowed_backends:
+        if backend.value == hint_lower:
+            return backend
+    return None

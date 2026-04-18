@@ -1,6 +1,7 @@
 # Public Agent Facade
 
 This module keeps the public agent catalog separate from internal execution details.
+The catalog is config-backed through `backend/config/agents.yaml`, with built-in defaults used as a fallback when config is missing or invalid.
 
 ## Public Agent IDs
 
@@ -21,6 +22,25 @@ Public agent IDs map to internal runtime keys:
 - `reviewer` -> `review_runtime`
 
 Runtime keys decide internal task defaults such as task class, route profile, approval mode, and prompt guidance. Worker topology, OpenCode routing, backend selection, retries, and fallback behavior remain internal.
+
+## Config Layout
+
+The catalog is split into two config-backed layers:
+
+- `agents`: public personas exposed to clients
+- `runtimes`: reusable execution presets used by those personas
+
+Agents can also define:
+
+- `system_prompt`: persona-specific guidance layered above user messages
+- `workflow`: structured execution guidance for inner loops, validation steps, and handoff expectations
+
+This preserves the existing many-to-one mapping model:
+
+- many public agents can point to one runtime
+- a public agent can switch runtimes without changing its stable public ID
+
+When the config file is unavailable or invalid, the service falls back to built-in defaults so `/api/v1/models` remains stable. The loader prefers YAML and still accepts the legacy JSON path for backward compatibility.
 
 ## Request Flow
 

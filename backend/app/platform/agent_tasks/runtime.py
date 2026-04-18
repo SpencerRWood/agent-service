@@ -19,6 +19,7 @@ from app.platform.agent_tasks.schemas import (
     TaskArtifact,
     TaskClass,
     TaskState,
+    WorkflowOutcome,
 )
 
 
@@ -26,6 +27,54 @@ class TaskProgressReporter(Protocol):
     async def publish(self, event_type: str, message: str, payload: dict | None = None) -> None: ...
 
     async def publish_artifact(self, artifact: TaskArtifact) -> None: ...
+
+
+class OpenCodeProgressReporter:
+    """Reporter that sends progress events to the broker's progress endpoint."""
+
+    def __init__(
+        self,
+        *,
+        task_id: str,
+        run_id: str,
+        step_id: str,
+        correlation_id: str,
+        base_url: str,
+    ) -> None:
+        self._task_id = task_id
+        self._run_id = run_id
+        self._step_id = step_id
+        self._correlation_id = correlation_id
+        self._base_url = base_url.rstrip("/")
+
+    async def publish(
+        self,
+        event_type: str,
+        message: str,
+        payload: dict | None = None,
+    ) -> None:
+        import httpx
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            try:
+                await client.post(
+                    f"{self._base_url}/api/worker/agent-tasks/{self._task_id}/progress",
+                    json={
+                        "run_id": self._run_id,
+                        "step_id": self._step_id,
+                        "correlation_id": self._correlation_id,
+                        "event_type": event_type,
+                        "message": message,
+                        "payload": payload or {},
+                        "actor_type": "worker",
+                        "actor_id": "opencode-runtime",
+                    },
+                )
+            except Exception:
+                pass
+
+    async def publish_artifact(self, artifact: TaskArtifact) -> None:
+        pass
 
 
 class TaskExecutor(Protocol):
@@ -154,6 +203,7 @@ class OpenCodeExecutor:
                 "backend": payload.get("backend", preflight.backend.value),
                 "execution_mode": ExecutionMode.OPENCODE,
                 "summary": payload.get("summary", "OpenCode task finished."),
+                "workflow_outcome": payload.get("workflow_outcome"),
                 "reason_code": None,
                 "raw_output": payload,
                 "artifacts": payload.get("artifacts", []),
@@ -351,6 +401,7 @@ class OpenCodeExecutor:
             backend=selection.backend,
             execution_mode=ExecutionMode.OPENCODE,
             summary=summary,
+            workflow_outcome=_default_workflow_outcome_for_task(envelope.task_class),
             raw_output={
                 "mode": "dry_run",
                 "command": self._command,
@@ -385,6 +436,7 @@ class OpenCodeExecutor:
             repo=envelope.target_repo or "default",
             runtime_key=envelope.runtime_key,
             public_agent_id=envelope.public_agent_id,
+            agent_system_prompt=envelope.agent_system_prompt,
             project=ProjectContext(project_path=envelope.metadata.get("project_path")),
             branch_strategy=envelope.target_branch or f"agent-task/{envelope.task_id}",
             instructions=envelope.user_prompt,
@@ -395,12 +447,17 @@ class OpenCodeExecutor:
                 f"execution_mode={envelope.execution_mode.value}",
             ],
             acceptance_criteria=_acceptance_criteria_for_task(envelope.task_class),
+            workflow=envelope.agent_workflow,
             source_metadata={
                 "task_id": envelope.task_id,
                 "correlation_id": envelope.correlation_id,
                 "public_agent_id": envelope.public_agent_id,
                 "runtime_key": envelope.runtime_key,
+                "agent_system_prompt": envelope.agent_system_prompt,
+                "agent_workflow": envelope.agent_workflow,
                 "route_profile": envelope.dispatch.route_profile,
+                "target_branch": envelope.target_branch,
+                "branch_strategy": envelope.target_branch or f"agent-task/{envelope.task_id}",
                 "allowed_backends": [candidate.value for candidate in envelope.allowed_backends],
                 "preferred_backend": envelope.preferred_backend.value
                 if envelope.preferred_backend is not None
@@ -582,6 +639,12 @@ def _acceptance_criteria_for_task(task_class: TaskClass) -> list[str]:
     if task_class == TaskClass.ANSWER_QUESTION:
         return ["The user question is answered directly and concisely."]
     return ["Task output is returned in a concise final artifact."]
+
+
+def _default_workflow_outcome_for_task(task_class: TaskClass) -> WorkflowOutcome:
+    if task_class == TaskClass.REVIEW:
+        return WorkflowOutcome.NEEDS_CHANGES
+    return WorkflowOutcome.SUCCESS
 
 
 async def _publish_state(

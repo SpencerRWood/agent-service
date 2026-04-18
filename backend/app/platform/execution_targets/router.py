@@ -1,7 +1,9 @@
-from fastapi import APIRouter, Depends, Header, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db.session import get_db
+from app.platform.agent_tasks.router import get_agent_task_service
+from app.platform.agent_tasks.service import AgentTaskService
 from app.platform.execution_targets.repository import ExecutionTargetRepository
 from app.platform.execution_targets.schemas import (
     ExecutionJobListResponse,
@@ -117,11 +119,21 @@ async def complete_execution_job(
     job_id: str,
     request: WorkerJobCompleteRequest,
     service: ExecutionTargetService = Depends(get_execution_target_service),
+    agent_task_service: AgentTaskService = Depends(get_agent_task_service),
     x_worker_token: str | None = Header(default=None, alias="X-Worker-Token"),
 ) -> ExecutionJobRead:
     target = await service._require_target(target_id)
     validate_worker_secret(target, x_worker_token)
-    return await service.complete_job(target_id=target_id, job_id=job_id, request=request)
+    updated = await service.complete_job(target_id=target_id, job_id=job_id, request=request)
+    if updated.tool_name == "agent.run_task" and updated.result_json is not None:
+        try:
+            await agent_task_service.handle_completed_job(
+                task_id=job_id,
+                result_payload=updated.result_json,
+            )
+        except HTTPException:
+            pass
+    return updated
 
 
 @worker_router.post("/{target_id}/jobs/{job_id}/fail", response_model=ExecutionJobRead)

@@ -38,6 +38,12 @@ class ExecutionMode(StrEnum):
     OPENCODE = "opencode"
 
 
+class WorkflowOutcome(StrEnum):
+    SUCCESS = "success"
+    FAILURE = "failure"
+    NEEDS_CHANGES = "needs_changes"
+
+
 class TaskState(StrEnum):
     QUEUED = "queued"
     PENDING_APPROVAL = "pending_approval"
@@ -89,6 +95,8 @@ class AgentTaskEnvelope(BaseModel):
     task_class: TaskClass
     public_agent_id: str | None = None
     runtime_key: str | None = None
+    agent_system_prompt: str | None = None
+    agent_workflow: dict[str, Any] = Field(default_factory=dict)
     target_repo: str | None = None
     target_branch: str | None = None
     execution_mode: ExecutionMode = ExecutionMode.OPENCODE
@@ -105,6 +113,8 @@ class AgentTaskCreateRequest(BaseModel):
     task_class: TaskClass | None = None
     public_agent_id: str | None = None
     runtime_key: str | None = None
+    agent_system_prompt: str | None = None
+    agent_workflow: dict[str, Any] = Field(default_factory=dict)
     prompt: str
     repo: str | None = None
     target_branch: str | None = None
@@ -112,6 +122,7 @@ class AgentTaskCreateRequest(BaseModel):
     execution_mode: ExecutionMode = ExecutionMode.OPENCODE
     allowed_backends: list[BackendName] = Field(default_factory=list)
     backend: BackendName | None = None
+    backend_hint: str | None = None
     fallback_backend: BackendName | None = None
     target_id: str | None = None
     route_profile: str | None = None
@@ -139,6 +150,7 @@ class AgentTaskResult(BaseModel):
     backend: BackendName | None = None
     execution_mode: ExecutionMode
     summary: str
+    workflow_outcome: WorkflowOutcome | None = None
     reason_code: str | None = None
     retry_after: datetime | None = None
     raw_output: dict[str, Any] = Field(default_factory=dict)

@@ -15,6 +15,7 @@ from app.platform.agent_tasks.schemas import (
     TaskClass,
     TaskState,
     WorkerDispatchDecision,
+    WorkflowOutcome,
 )
 
 
@@ -86,6 +87,7 @@ def test_opencode_runtime_executes_local_llm_task():
 
     assert result.state == TaskState.COMPLETED
     assert result.backend == BackendName.LOCAL_LLM
+    assert result.workflow_outcome == WorkflowOutcome.SUCCESS
     assert reporter.events[0][0] == "agent.task.routing.resolved"
 
 
@@ -106,6 +108,7 @@ def test_opencode_runtime_dry_run_executes_coding_backend_through_opencode():
     assert result.state == TaskState.COMPLETED
     assert result.backend == BackendName.CODEX
     assert result.raw_output["backend"] == "codex"
+    assert result.workflow_outcome == WorkflowOutcome.SUCCESS
 
 
 def test_opencode_runtime_honors_explicit_codex_for_inspect_repo():
@@ -126,3 +129,4 @@ def test_opencode_runtime_honors_explicit_codex_for_inspect_repo():
     assert result.state == TaskState.COMPLETED
     assert result.backend == BackendName.CODEX
     assert result.raw_output["backend"] == "codex"
+    assert result.workflow_outcome == WorkflowOutcome.SUCCESS
