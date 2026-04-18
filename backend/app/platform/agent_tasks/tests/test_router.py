@@ -10,10 +10,12 @@ from app.platform.agent_tasks.router import (
 from app.platform.agent_tasks.schemas import (
     AgentTaskEnvelope,
     AgentTaskRead,
+    AgentTaskResult,
     BackendName,
     ExecutionMode,
     PublicAgentTaskRead,
     PublicAgentTaskSummaryListRead,
+    TaskArtifact,
     TaskState,
     WorkerDispatchDecision,
 )
@@ -24,8 +26,12 @@ from app.platform.runs.schemas import RunRead, RunStepRead
 
 
 class FakeAgentTaskService:
+    def __init__(self, task: AgentTaskRead | None = None) -> None:
+        self.task = task or build_task(task_id="task-1")
+
     async def get_task(self, task_id: str) -> AgentTaskRead:
-        return build_task(task_id=task_id)
+        assert task_id == self.task.task_id
+        return self.task
 
 
 class FakeTaskStore(TaskStore):
@@ -201,8 +207,8 @@ def build_task(*, task_id: str) -> AgentTaskRead:
 
 def build_client(task_store: FakeTaskStore | None = None) -> TestClient:
     app = FastAPI()
-    service = FakeAgentTaskService()
     task_store = task_store or FakeTaskStore()
+    service = FakeAgentTaskService(task_store.task)
     app.include_router(router, prefix=settings.api_prefix)
     app.dependency_overrides[get_agent_task_service] = lambda: service
     app.dependency_overrides[get_task_store] = lambda: task_store
@@ -222,6 +228,59 @@ def test_stream_agent_task_includes_approval_events_and_terminal_pending_approva
     assert '"approval_id": "approval-1"' in body
     assert "event: terminal\n" in body
     assert '"status": "pending_approval"' in body
+
+
+def test_stream_agent_task_emits_terminal_for_inline_completed_task():
+    task_store = FakeTaskStore()
+    inline_completed_task = build_task(task_id="task-inline")
+    inline_completed_task.state = TaskState.COMPLETED
+    inline_completed_task.run.status = "completed"
+    inline_completed_task.run.completed_at = "2026-04-10T00:00:02Z"
+    inline_completed_task.step.status = "completed"
+    inline_completed_task.step.completed_at = "2026-04-10T00:00:02Z"
+    inline_completed_task.approvals = []
+    inline_completed_task.job = None
+    inline_completed_task.result = AgentTaskResult(
+        state=TaskState.COMPLETED,
+        backend=BackendName.CODEX,
+        execution_mode=ExecutionMode.OPENCODE,
+        summary="Planner task completed inline.",
+        artifacts=[
+            TaskArtifact(
+                artifact_type="summary",
+                title="Plan",
+                content={"markdown": "done"},
+                provenance={},
+            )
+        ],
+        completed_at="2026-04-10T00:00:02Z",
+    )
+    inline_completed_task.events = [
+        EventRead(
+            id="event-2",
+            run_id="task-inline",
+            run_step_id="step-1",
+            entity_type="agent_task",
+            entity_id="task-inline",
+            event_type="agent.task.completed",
+            payload_json={"message": "Planner task completed inline.", "state": "completed"},
+            actor_type="broker",
+            actor_id="agent-services",
+            trace_id="corr-1",
+            created_at="2026-04-10T00:00:02Z",
+        )
+    ]
+    task_store.task = inline_completed_task
+    client = build_client(task_store)
+
+    with client.stream("GET", "/api/agent-tasks/task-inline/stream") as response:
+        body = "".join(
+            chunk.decode() if isinstance(chunk, bytes) else chunk for chunk in response.iter_text()
+        )
+
+    assert response.status_code == 200
+    assert "event: terminal\n" in body
+    assert '"status": "completed"' in body
 
 
 def test_get_agent_task_returns_compact_public_view():
