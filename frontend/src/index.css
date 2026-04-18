@@ -30,7 +30,9 @@ a {
 }
 
 button,
-input {
+input,
+textarea,
+code {
   font: inherit;
 }
 
@@ -163,6 +165,15 @@ input {
   background: rgba(255, 255, 255, 0.92);
 }
 
+textarea {
+  width: 100%;
+  border-radius: 18px;
+  border: 1px solid rgba(19, 33, 46, 0.12);
+  padding: 1rem;
+  background: rgba(255, 255, 255, 0.92);
+  resize: vertical;
+}
+
 button {
   border: 0;
   border-radius: 14px;
@@ -203,6 +214,43 @@ button {
   color: #5c6a75;
 }
 
+.config-page__header {
+  display: grid;
+  gap: 1rem;
+}
+
+.config-editor {
+  display: grid;
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.config-editor__textarea {
+  min-height: 28rem;
+  font-family: "SF Mono", "Monaco", "Cascadia Code", monospace;
+  font-size: 0.93rem;
+  line-height: 1.45;
+}
+
+.config-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1.5rem;
+}
+
+.config-preview {
+  margin: 0;
+  padding: 1rem;
+  border-radius: 18px;
+  background: #0f1720;
+  color: #e8f0f6;
+  overflow: auto;
+  font-family: "SF Mono", "Monaco", "Cascadia Code", monospace;
+  font-size: 0.88rem;
+  line-height: 1.45;
+  min-height: 28rem;
+}
+
 .target-list {
   display: grid;
   gap: 1rem;
@@ -213,6 +261,12 @@ button {
   border-radius: 20px;
   padding: 1rem;
   background: #fdfdfb;
+}
+
+@media (max-width: 1100px) {
+  .config-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .target-card__header {

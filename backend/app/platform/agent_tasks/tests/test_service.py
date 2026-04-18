@@ -12,6 +12,7 @@ from app.platform.agent_tasks.schemas import (
     WorkerDispatchDecision,
 )
 from app.platform.agent_tasks.service import AgentTaskService
+from app.platform.agents.service import AgentRegistry, RuntimeRegistry
 from app.platform.approvals.schemas import ApprovalDecisionRead, ApprovalRequestRead
 from app.platform.artifacts.schemas import ArtifactRead
 from app.platform.events.schemas import EventRead
@@ -157,6 +158,25 @@ class FakeApprovalService:
         self.approvals_by_run: dict[str, list[ApprovalRequestRead]] = {}
         self.decisions_by_run: dict[str, list[ApprovalDecisionRead]] = {}
 
+    async def create_request(self, request):
+        approval = ApprovalRequestRead(
+            id="approval-created",
+            run_id=request.run_id,
+            run_step_id=request.run_step_id,
+            target_type=request.target_type,
+            target_id=request.target_id,
+            status="pending",
+            decision_type="yes_no",
+            policy_key=request.policy_key,
+            reason=request.reason,
+            request_payload_json=request.requested_decision,
+            expires_at=None,
+            created_at="2026-04-10T00:00:00Z",
+            updated_at="2026-04-10T00:00:00Z",
+        )
+        self.approvals_by_run.setdefault(request.run_id, []).append(approval)
+        return approval
+
     async def list_for_run(self, run_id):
         return self.approvals_by_run.get(
             run_id,
@@ -277,6 +297,55 @@ def test_create_task_builds_envelope_with_worker_dispatch_and_broker_hints():
     assert response.task.approvals[0].id == "approval-1"
     assert response.task.approval_decisions[0].id == "decision-1"
     assert run_service.create_run_calls == 1
+
+
+def test_create_task_resolves_backend_from_hint():
+    run_service = FakeRunService()
+    service = AgentTaskService(
+        run_service=run_service,
+        event_service=FakeEventService(),
+        approval_service=FakeApprovalService(),
+        artifact_service=FakeArtifactService(),
+        execution_target_service=FakeExecutionTargetService(),
+    )
+
+    response = asyncio.run(
+        service.create_task(
+            AgentTaskCreateRequest(
+                task_class=TaskClass.IMPLEMENT,
+                prompt="Implement explicit routing",
+                repo="agent-service",
+                backend_hint="codex",
+            )
+        )
+    )
+
+    assert response.task.envelope.preferred_backend == BackendName.CODEX
+
+
+def test_create_task_resolves_backend_from_hint_not_in_allowed():
+    run_service = FakeRunService()
+    service = AgentTaskService(
+        run_service=run_service,
+        event_service=FakeEventService(),
+        approval_service=FakeApprovalService(),
+        artifact_service=FakeArtifactService(),
+        execution_target_service=FakeExecutionTargetService(),
+    )
+
+    response = asyncio.run(
+        service.create_task(
+            AgentTaskCreateRequest(
+                task_class=TaskClass.IMPLEMENT,
+                prompt="Refactor the auth module",
+                repo="agent-service",
+                backend_hint="codex",
+                allowed_backends=[BackendName.LOCAL_LLM],
+            )
+        )
+    )
+
+    assert response.task.envelope.preferred_backend == BackendName.LOCAL_LLM
 
 
 def test_create_task_reuses_recent_duplicate_by_idempotency_key():
@@ -497,6 +566,243 @@ def test_list_public_tasks_hides_enrichment_runs_and_merges_metadata():
         "How do we handle retries?",
         "What tests should we add?",
     ]
+
+
+def test_handle_completed_job_spawns_handoff_task_from_workflow():
+    run_service = FakeRunService()
+    event_service = FakeEventService()
+    approval_service = FakeApprovalService()
+    approval_service.approvals_by_run = {"task-review": [], "task-1": []}
+    approval_service.decisions_by_run = {"task-review": [], "task-1": []}
+    artifact_service = FakeArtifactService()
+    execution_target_service = FakeExecutionTargetService()
+
+    reviewer_envelope = AgentTaskEnvelope(
+        task_id="task-review",
+        run_id="task-review",
+        step_id="step-review",
+        correlation_id="corr-review",
+        user_prompt="Review the queue health check implementation.",
+        normalized_goal="Review the queue health check implementation.",
+        task_class=TaskClass.REVIEW,
+        public_agent_id="reviewer",
+        runtime_key="review_runtime",
+        agent_system_prompt="Review carefully.",
+        agent_workflow={
+            "max_iterations": 1,
+            "entry_step": "review",
+            "steps": [
+                {
+                    "id": "review",
+                    "instructions": "Review the implementation and hand back fixes if needed.",
+                    "on_success": {"action": "finish"},
+                    "on_failure": {
+                        "action": "handoff",
+                        "to": "coder",
+                        "prompt": "Summarize the fixes for the coder.",
+                    },
+                }
+            ],
+        },
+        target_repo="agent-service",
+        target_branch="feature/review",
+        allowed_backends=[BackendName.CODEX],
+        preferred_backend=BackendName.CODEX,
+        approval_policy={"mode": "required"},
+        timeout_policy={"seconds": 900},
+        return_artifacts=["summary"],
+        metadata={"project_path": "/tmp/repo"},
+        dispatch=WorkerDispatchDecision(
+            target_id="worker-b",
+            route_profile="implementation",
+            reason="test",
+        ),
+    )
+    run_service.runs = {"task-review": _build_run_read("task-review", status="completed")}
+    run_service.steps_by_run = {
+        "task-review": [
+            _build_step_read(
+                "task-review",
+                "step-review",
+                step_type="review",
+                input_json={},
+                output_json={"task_envelope": reviewer_envelope.model_dump(mode="json")},
+            )
+        ]
+    }
+    execution_target_service.jobs_by_id = {
+        "task-review": ExecutionJobRead(
+            id="task-review",
+            target_id="worker-b",
+            tool_name="agent.run_task",
+            status="completed",
+            payload_json={"task": reviewer_envelope.model_dump(mode="json")},
+            result_json={
+                "state": "completed",
+                "backend": "codex",
+                "execution_mode": "opencode",
+                "summary": "Review completed with concrete follow-up guidance.",
+                "workflow_outcome": "needs_changes",
+                "reason_code": None,
+                "raw_output": {},
+                "artifacts": [],
+                "metrics": {},
+                "completed_at": datetime.now(UTC).isoformat(),
+            },
+            error_json=None,
+            claimed_by="worker-b",
+            created_at="2026-04-10T00:00:00Z",
+            claimed_at="2026-04-10T00:00:01Z",
+            completed_at="2026-04-10T00:00:02Z",
+        )
+    }
+
+    runtime_registry = RuntimeRegistry()
+    service = AgentTaskService(
+        run_service=run_service,
+        event_service=event_service,
+        approval_service=approval_service,
+        artifact_service=artifact_service,
+        execution_target_service=execution_target_service,
+        agent_registry=AgentRegistry(runtime_registry),
+        runtime_registry=runtime_registry,
+    )
+
+    spawned = asyncio.run(
+        service.handle_completed_job(
+            task_id="task-review",
+            result_payload=execution_target_service.jobs_by_id["task-review"].result_json,
+        )
+    )
+
+    assert spawned is not None
+    assert spawned.task_id == "task-1"
+    child_step = run_service.steps_by_run["task-1"][0]
+    assert child_step.input_json["public_agent_id"] == "coder"
+    assert child_step.input_json["runtime_key"] == "coding_runtime"
+    assert "Workflow handoff from reviewer to coder." in child_step.input_json["user_prompt"]
+    assert (
+        "Review completed with concrete follow-up guidance." in child_step.input_json["user_prompt"]
+    )
+    assert child_step.input_json["metadata"]["handoff_parent_task_id"] == "task-review"
+    assert child_step.input_json["metadata"]["workflow_step_id"] == "implement-fixes"
+    assert any(
+        event.event_type == "agent.task.workflow.transitioned" for event in event_service.events
+    )
+
+
+def test_handle_completed_job_loops_coder_back_to_reviewer_on_success():
+    run_service = FakeRunService()
+    event_service = FakeEventService()
+    approval_service = FakeApprovalService()
+    approval_service.approvals_by_run = {"task-code": [], "task-1": []}
+    approval_service.decisions_by_run = {"task-code": [], "task-1": []}
+    artifact_service = FakeArtifactService()
+    execution_target_service = FakeExecutionTargetService()
+
+    coder_envelope = AgentTaskEnvelope(
+        task_id="task-code",
+        run_id="task-code",
+        step_id="step-code",
+        correlation_id="corr-code",
+        user_prompt="Implement the reviewer fixes for queue health handling.",
+        normalized_goal="Implement the reviewer fixes for queue health handling.",
+        task_class=TaskClass.IMPLEMENT,
+        public_agent_id="coder",
+        runtime_key="coding_runtime",
+        agent_system_prompt="Implement carefully.",
+        agent_workflow={
+            "max_iterations": 3,
+            "entry_step": "implement-fixes",
+            "steps": [
+                {
+                    "id": "implement-fixes",
+                    "instructions": "Apply the requested remediation changes.",
+                    "on_success": {
+                        "action": "handoff",
+                        "to": "reviewer",
+                        "prompt": "Re-review the implementation.",
+                    },
+                    "on_failure": {"action": "finish"},
+                }
+            ],
+        },
+        target_repo="agent-service",
+        target_branch="feature/review",
+        allowed_backends=[BackendName.CODEX],
+        preferred_backend=BackendName.CODEX,
+        approval_policy={"mode": "none"},
+        timeout_policy={"seconds": 900},
+        return_artifacts=["summary"],
+        metadata={"workflow_origin_task_id": "task-review", "workflow_iteration": 1},
+        dispatch=WorkerDispatchDecision(
+            target_id="worker-b",
+            route_profile="implementation",
+            reason="test",
+        ),
+    )
+    run_service.runs = {"task-code": _build_run_read("task-code", status="completed")}
+    run_service.steps_by_run = {
+        "task-code": [
+            _build_step_read(
+                "task-code",
+                "step-code",
+                step_type="implement",
+                input_json={},
+                output_json={"task_envelope": coder_envelope.model_dump(mode="json")},
+            )
+        ]
+    }
+    execution_target_service.jobs_by_id = {
+        "task-code": ExecutionJobRead(
+            id="task-code",
+            target_id="worker-b",
+            tool_name="agent.run_task",
+            status="completed",
+            payload_json={"task": coder_envelope.model_dump(mode="json")},
+            result_json={
+                "state": "completed",
+                "backend": "codex",
+                "execution_mode": "opencode",
+                "summary": "Implementation finished.",
+                "workflow_outcome": "success",
+                "reason_code": None,
+                "raw_output": {},
+                "artifacts": [],
+                "metrics": {},
+                "completed_at": datetime.now(UTC).isoformat(),
+            },
+            error_json=None,
+            claimed_by="worker-b",
+            created_at="2026-04-10T00:00:00Z",
+            claimed_at="2026-04-10T00:00:01Z",
+            completed_at="2026-04-10T00:00:02Z",
+        )
+    }
+
+    runtime_registry = RuntimeRegistry()
+    service = AgentTaskService(
+        run_service=run_service,
+        event_service=event_service,
+        approval_service=approval_service,
+        artifact_service=artifact_service,
+        execution_target_service=execution_target_service,
+        agent_registry=AgentRegistry(runtime_registry),
+        runtime_registry=runtime_registry,
+    )
+
+    spawned = asyncio.run(
+        service.handle_completed_job(
+            task_id="task-code",
+            result_payload=execution_target_service.jobs_by_id["task-code"].result_json,
+        )
+    )
+
+    assert spawned is not None
+    child_step = run_service.steps_by_run["task-1"][0]
+    assert child_step.input_json["public_agent_id"] == "reviewer"
+    assert child_step.input_json["metadata"]["workflow_iteration"] == 2
+    assert child_step.input_json["metadata"]["workflow_origin_task_id"] == "task-review"
 
 
 def _build_run_read(run_id: str, *, status: str, idempotency_key: str | None = None) -> RunRead:

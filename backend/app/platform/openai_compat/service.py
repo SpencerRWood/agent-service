@@ -46,14 +46,25 @@ class OpenAICompatService:
     ) -> ChatCompletionResponse | StreamingResponse:
         agent = self._agent_registry.get_agent(request.model)
         runtime = self._runtime_registry.get_runtime(agent.runtime)
-        prompt = _messages_to_prompt(request.messages, runtime.prompt_preamble)
+        prompt = _messages_to_prompt(
+            request.messages,
+            agent_system_prompt=agent.system_prompt,
+            runtime_prompt=runtime.prompt_preamble,
+        )
         suppress_progress = is_enrichment_task(prompt)
-        metadata = _build_idempotency_metadata(request=request, prompt=prompt)
+        metadata = _build_idempotency_metadata(
+            request=request,
+            prompt=prompt,
+            agent_system_prompt=agent.system_prompt,
+            agent_workflow=agent.workflow.model_dump(mode="json") if agent.workflow else {},
+        )
         task_response = await self._task_store.create_task(
             AgentTaskCreateRequest(
                 task_class=runtime.task_class,
                 public_agent_id=agent.id,
                 runtime_key=runtime.key,
+                agent_system_prompt=agent.system_prompt,
+                agent_workflow=agent.workflow.model_dump(mode="json") if agent.workflow else {},
                 prompt=prompt,
                 route_profile=runtime.route_profile,
                 approval_policy={"mode": runtime.approval_mode},
@@ -174,10 +185,17 @@ class OpenAICompatService:
         )
 
 
-def _messages_to_prompt(messages, prompt_preamble: str | None) -> str:
+def _messages_to_prompt(
+    messages,
+    *,
+    agent_system_prompt: str | None,
+    runtime_prompt: str | None,
+) -> str:
     rendered: list[str] = []
-    if prompt_preamble:
-        rendered.append(f"Runtime guidance: {prompt_preamble}")
+    if agent_system_prompt:
+        rendered.append(f"Agent guidance: {agent_system_prompt}")
+    if runtime_prompt:
+        rendered.append(f"Runtime guidance: {runtime_prompt}")
     for message in messages:
         if isinstance(message.content, str):
             content = message.content
@@ -191,10 +209,14 @@ def _build_idempotency_metadata(
     *,
     request: ChatCompletionRequest,
     prompt: str,
+    agent_system_prompt: str | None,
+    agent_workflow: dict,
 ) -> dict:
     metadata = dict(request.metadata)
     fingerprint_payload = {
         "model": request.model,
+        "agent_system_prompt": agent_system_prompt,
+        "agent_workflow": agent_workflow,
         "messages": [
             {"role": message.role, "content": message.content} for message in request.messages
         ],

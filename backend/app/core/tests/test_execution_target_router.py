@@ -2,15 +2,25 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.core.settings import settings
-from app.platform.execution_targets.router import get_execution_target_service, job_router, router
+from app.platform.agent_tasks.router import get_agent_task_service
+from app.platform.execution_targets.router import (
+    get_execution_target_service,
+    job_router,
+    router,
+    worker_router,
+)
 from app.platform.execution_targets.schemas import (
     ExecutionJobListResponse,
+    ExecutionJobRead,
     ExecutionTargetHealthRead,
     ExecutionTargetRead,
 )
 
 
 class FakeExecutionTargetService:
+    def __init__(self) -> None:
+        self.completed_calls = []
+
     async def create_target(self, request):
         return ExecutionTargetRead(
             id=request.id,
@@ -75,13 +85,58 @@ class FakeExecutionTargetService:
         assert target_id == "worker-b"
         return None
 
+    async def _require_target(self, target_id):
+        assert target_id == "worker-b"
+        return type("Target", (), {"secret_ref": "worker-token"})()
+
+    async def complete_job(self, *, target_id, job_id, request):
+        self.completed_calls.append((target_id, job_id, request))
+        return ExecutionJobRead(
+            id=job_id,
+            target_id=target_id,
+            tool_name="agent.run_task",
+            status="completed",
+            payload_json={"task": {"task_id": job_id}},
+            result_json={
+                "state": "completed",
+                "backend": "codex",
+                "execution_mode": "opencode",
+                "summary": "Review completed with fixes suggested.",
+                "workflow_outcome": "needs_changes",
+                "reason_code": None,
+                "raw_output": {},
+                "artifacts": [],
+                "metrics": {},
+                "completed_at": "2026-04-10T00:00:02Z",
+            },
+            error_json=None,
+            claimed_by="worker-b",
+            created_at="2026-04-10T00:00:00Z",
+            claimed_at="2026-04-10T00:00:01Z",
+            completed_at="2026-04-10T00:00:02Z",
+        )
+
+
+class FakeAgentTaskService:
+    def __init__(self) -> None:
+        self.completed_jobs = []
+
+    async def handle_completed_job(self, *, task_id, result_payload):
+        self.completed_jobs.append((task_id, result_payload))
+        return None
+
 
 def build_client() -> TestClient:
     app = FastAPI()
     service = FakeExecutionTargetService()
+    agent_task_service = FakeAgentTaskService()
     app.include_router(router, prefix=settings.api_prefix)
     app.include_router(job_router, prefix=settings.api_prefix)
+    app.include_router(worker_router, prefix=settings.api_prefix)
     app.dependency_overrides[get_execution_target_service] = lambda: service
+    app.dependency_overrides[get_agent_task_service] = lambda: agent_task_service
+    app.state.fake_execution_target_service = service
+    app.state.fake_agent_task_service = agent_task_service
     return TestClient(app)
 
 
@@ -143,3 +198,54 @@ def test_delete_execution_target_returns_no_content():
 
     assert response.status_code == 204
     assert response.text == ""
+
+
+def test_complete_execution_job_triggers_agent_task_handoff_hook():
+    previous_secret = settings.worker_secret_refs.get("worker-token")
+    settings.worker_secret_refs["worker-token"] = "secret"
+    client = build_client()
+    try:
+        response = client.post(
+            "/api/worker/execution-targets/worker-b/jobs/task-1/complete",
+            headers={"X-Worker-Token": "secret"},
+            json={
+                "worker_id": "worker-b",
+                "result": {
+                    "state": "completed",
+                    "backend": "codex",
+                    "execution_mode": "opencode",
+                    "summary": "Review completed with fixes suggested.",
+                    "workflow_outcome": "needs_changes",
+                    "reason_code": None,
+                    "raw_output": {},
+                    "artifacts": [],
+                    "metrics": {},
+                    "completed_at": "2026-04-10T00:00:02Z",
+                },
+            },
+        )
+
+        assert response.status_code == 200
+        assert client.app.state.fake_execution_target_service.completed_calls
+        assert client.app.state.fake_agent_task_service.completed_jobs == [
+            (
+                "task-1",
+                {
+                    "state": "completed",
+                    "backend": "codex",
+                    "execution_mode": "opencode",
+                    "summary": "Review completed with fixes suggested.",
+                    "workflow_outcome": "needs_changes",
+                    "reason_code": None,
+                    "raw_output": {},
+                    "artifacts": [],
+                    "metrics": {},
+                    "completed_at": "2026-04-10T00:00:02Z",
+                },
+            )
+        ]
+    finally:
+        if previous_secret is None:
+            settings.worker_secret_refs.pop("worker-token", None)
+        else:
+            settings.worker_secret_refs["worker-token"] = previous_secret
