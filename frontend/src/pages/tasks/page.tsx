@@ -3,6 +3,8 @@ import { useEffect, useState } from "react"
 import { API_BASE_URL } from "@/config/env"
 import { listAgentTasks, type AgentTaskSummary } from "@/features/tasks/api"
 
+const PROMPT_PREVIEW_LENGTH = 220
+
 function formatTimestamp(value: string | null): string {
   if (!value) {
     return "In progress"
@@ -31,6 +33,32 @@ function formatDuration(seconds: number | null): string {
 
 function stateClass(state: string): string {
   return state === "completed" ? "pill pill--online" : "pill pill--offline"
+}
+
+function formatLabel(value: string | null | undefined): string {
+  if (!value) {
+    return "n/a"
+  }
+  return value
+    .split("_")
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ")
+}
+
+function truncatePrompt(prompt: string): string {
+  const normalized = prompt.replace(/\s+/g, " ").trim()
+  if (normalized.length <= PROMPT_PREVIEW_LENGTH) {
+    return normalized
+  }
+  return `${normalized.slice(0, PROMPT_PREVIEW_LENGTH).trimEnd()}...`
+}
+
+function formatStructuredText(value: string): string {
+  try {
+    return JSON.stringify(JSON.parse(value), null, 2)
+  } catch {
+    return value
+  }
 }
 
 export default function TasksPage() {
@@ -75,16 +103,28 @@ export default function TasksPage() {
           {tasks.map((task) => (
             <article className="task-card" key={task.task_id}>
               <div className="task-card__header">
-                <div>
+                <div className="task-card__identity">
                   <h3>{task.agent_id || "Unspecified Agent"}</h3>
-                  <p>{task.task_id}</p>
+                  <p className="task-card__id">{task.task_id}</p>
+                  <div className="task-card__badges">
+                    <span className="pill pill--neutral">{formatLabel(task.task_class)}</span>
+                    <span className="pill pill--neutral">{formatLabel(task.runtime_key)}</span>
+                    <span className="pill pill--neutral">{formatLabel(task.selected_backend || task.preferred_backend)}</span>
+                  </div>
                 </div>
                 <span className={stateClass(task.state)}>{task.state}</span>
               </div>
 
-              <p className="task-card__prompt">{task.prompt}</p>
+              <div className="task-card__section">
+                <p className="task-card__section-label">Prompt Preview</p>
+                <p className="task-card__prompt">{truncatePrompt(task.prompt)}</p>
+                <details className="task-card__details">
+                  <summary>Show full prompt</summary>
+                  <pre className="task-card__code">{formatStructuredText(task.prompt)}</pre>
+                </details>
+              </div>
 
-              <dl className="meta meta--three-up">
+              <dl className="meta meta--three-up task-card__stats">
                 <div>
                   <dt>Runtime</dt>
                   <dd>{task.runtime_key || "n/a"}</dd>
@@ -123,21 +163,58 @@ export default function TasksPage() {
                 </div>
               </dl>
 
+              {task.conversation_title || task.conversation_tags.length > 0 ? (
+                <div className="task-card__summary">
+                  <strong>Conversation Metadata</strong>
+                  <div className="task-card__metadata">
+                    {task.conversation_title ? (
+                      <div>
+                        <span className="task-card__section-label">Title</span>
+                        <p className="task-card__metadata-text">{task.conversation_title}</p>
+                      </div>
+                    ) : null}
+                    {task.conversation_tags.length > 0 ? (
+                      <div>
+                        <span className="task-card__section-label">Tags</span>
+                        <div className="task-card__badges">
+                          {task.conversation_tags.map((tag) => (
+                            <span className="pill pill--neutral" key={tag}>
+                              {tag}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              ) : null}
+
               {task.summary ? (
                 <div className="task-card__summary">
                   <strong>Result</strong>
-                  <p>{task.summary}</p>
+                  <pre className="task-card__code">{formatStructuredText(task.summary)}</pre>
+                </div>
+              ) : null}
+
+              {task.follow_ups.length > 0 ? (
+                <div className="task-card__summary">
+                  <strong>Suggested Follow-Ups</strong>
+                  <ul className="task-card__follow-ups">
+                    {task.follow_ups.map((followUp) => (
+                      <li key={followUp}>{followUp}</li>
+                    ))}
+                  </ul>
                 </div>
               ) : null}
 
               {task.last_event_message ? (
                 <div className="task-card__summary">
                   <strong>Latest Event</strong>
-                  <p>{task.last_event_message}</p>
+                  <pre className="task-card__code">{formatStructuredText(task.last_event_message)}</pre>
                 </div>
               ) : null}
 
-              <div className="actions">
+              <div className="actions task-card__actions">
                 <a
                   className="button-link"
                   href={`${API_BASE_URL}${task.stream_url}`}

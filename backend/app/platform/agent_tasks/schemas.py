@@ -190,6 +190,7 @@ class PublicAgentTaskSummaryRead(BaseModel):
     task_id: str
     agent_id: str | None = None
     runtime_key: str | None = None
+    task_kind: str = "response"
     task_class: str
     state: str
     approval_pending: bool = False
@@ -204,6 +205,9 @@ class PublicAgentTaskSummaryRead(BaseModel):
     completed_at: datetime | None = None
     duration_seconds: float | None = None
     last_event_message: str | None = None
+    conversation_title: str | None = None
+    conversation_tags: list[str] = Field(default_factory=list)
+    follow_ups: list[str] = Field(default_factory=list)
     stream_url: str
 
 

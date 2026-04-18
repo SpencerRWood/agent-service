@@ -6,6 +6,12 @@ from uuid import uuid4
 
 from fastapi import HTTPException, status
 
+from app.platform.agent_tasks.enrichment import (
+    EnrichmentTaskKind,
+    classify_prompt_kind,
+    extract_enrichment_payload,
+    extract_parent_task_id,
+)
 from app.platform.agent_tasks.runtime import (
     available_route_profiles,
     classify_task,
@@ -209,8 +215,10 @@ class AgentTaskService:
         return await self._build_task_read(task_id)
 
     async def list_public_tasks(self, *, limit: int = 25) -> PublicAgentTaskSummaryListRead:
-        runs = await self._run_service.list_recent_runs(limit=limit)
-        items = []
+        runs = await self._run_service.list_recent_runs(limit=min(limit * 5, 200))
+        items: list[PublicAgentTaskSummaryRead] = []
+        items_by_id: dict[str, PublicAgentTaskSummaryRead] = {}
+        pending_enrichment: dict[str, dict] = {}
         for run in runs:
             try:
                 task = await self._build_task_read(run.id)
@@ -218,8 +226,42 @@ class AgentTaskService:
                 if exc.status_code == status.HTTP_404_NOT_FOUND:
                     continue
                 raise
-            items.append(_to_public_task_summary(task))
-        return PublicAgentTaskSummaryListRead(items=items)
+            kind = classify_prompt_kind(task.envelope.user_prompt)
+            if kind != EnrichmentTaskKind.RESPONSE:
+                parent_task_id = extract_parent_task_id(task.envelope.user_prompt)
+                if parent_task_id is None:
+                    continue
+                enrichment = extract_enrichment_payload(
+                    kind, task.result.summary if task.result else None
+                )
+                if not enrichment:
+                    continue
+                pending_enrichment[parent_task_id] = {
+                    **pending_enrichment.get(parent_task_id, {}),
+                    **enrichment,
+                }
+                if parent_task_id in items_by_id:
+                    items_by_id[parent_task_id] = items_by_id[parent_task_id].model_copy(
+                        update={
+                            **pending_enrichment[parent_task_id],
+                        }
+                    )
+                    items = [
+                        items_by_id.get(item.task_id, item)
+                        if item.task_id == parent_task_id
+                        else item
+                        for item in items
+                    ]
+                continue
+
+            summary = _to_public_task_summary(task)
+            if task.task_id in pending_enrichment:
+                summary = summary.model_copy(update=pending_enrichment[task.task_id])
+            items.append(summary)
+            items_by_id[task.task_id] = summary
+            if len(items) >= limit:
+                break
+        return PublicAgentTaskSummaryListRead(items=items[:limit])
 
     async def approve_task(
         self,
@@ -644,6 +686,7 @@ def _to_public_task_summary(task: AgentTaskRead) -> PublicAgentTaskSummaryRead:
         task_id=task.task_id,
         agent_id=task.envelope.public_agent_id,
         runtime_key=task.envelope.runtime_key,
+        task_kind=EnrichmentTaskKind.RESPONSE.value,
         task_class=task.envelope.task_class.value,
         state="pending_approval" if approval_pending else task.state.value,
         approval_pending=approval_pending,
@@ -660,5 +703,8 @@ def _to_public_task_summary(task: AgentTaskRead) -> PublicAgentTaskSummaryRead:
         completed_at=completed_at,
         duration_seconds=duration_seconds,
         last_event_message=last_event_message,
+        conversation_title=None,
+        conversation_tags=[],
+        follow_ups=[],
         stream_url=f"/api/agent-tasks/{task.task_id}/stream",
     )

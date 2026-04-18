@@ -306,6 +306,33 @@ def test_streaming_chat_completion_emits_task_metadata_and_done_marker():
     assert "[DONE]" in body
 
 
+def test_streaming_enrichment_task_suppresses_progress_messages():
+    client = build_client(FakeTaskStore())
+
+    with client.stream(
+        "POST",
+        "/api/v1/chat/completions",
+        json={
+            "model": "planner",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "### Task: Generate 1-3 broad tags categorizing the main themes of the chat history.",
+                }
+            ],
+            "stream": True,
+        },
+    ) as response:
+        body = "".join(
+            chunk.decode() if isinstance(chunk, bytes) else chunk for chunk in response.iter_text()
+        )
+
+    assert response.status_code == 200
+    assert "Created planner task." not in body
+    assert "Completed for planner" in body
+    assert "[DONE]" in body
+
+
 def test_chat_completion_prefers_request_identifiers_for_idempotency():
     task_store = FakeTaskStore()
     client = build_client(task_store)
