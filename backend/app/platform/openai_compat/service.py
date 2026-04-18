@@ -115,7 +115,7 @@ class OpenAICompatService:
                         "choices": [
                             {
                                 "index": 0,
-                                "delta": {"content": f"{message}\n"},
+                                "delta": {"content": message},
                                 "finish_reason": None,
                             }
                         ],
