@@ -125,6 +125,12 @@ async def stream_agent_task(
                     f"data: {json.dumps({'status': 'rejected', 'task_id': task.task_id})}\n\n"
                 )
                 break
+            if task.state in {TaskState.COMPLETED, TaskState.FAILED}:
+                yield (
+                    "event: terminal\n"
+                    f"data: {json.dumps({'status': task.state.value, 'task_id': task.task_id})}\n\n"
+                )
+                break
             if task.job and task.job.status in {"completed", "failed"}:
                 yield (
                     "event: terminal\n"
