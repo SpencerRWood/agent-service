@@ -73,3 +73,7 @@ class AgentCatalogConfigRead(BaseModel):
 
 class AgentCatalogOverrideUpdate(BaseModel):
     yaml: str = Field(default="")
+
+
+class AgentCatalogStructuredUpdate(BaseModel):
+    catalog: AgentCatalogDefinition

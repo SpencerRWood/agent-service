@@ -15,7 +15,7 @@ from app.platform.agents.catalog import (
     validate_catalog_payload,
 )
 from app.platform.agents.repository import AgentCatalogConfigRepository
-from app.platform.agents.schemas import AgentCatalogConfigRead
+from app.platform.agents.schemas import AgentCatalogConfigRead, AgentCatalogDefinition
 
 
 class AgentCatalogConfigService:
@@ -66,6 +66,15 @@ class AgentCatalogConfigService:
     async def reset_override(self) -> AgentCatalogConfigRead:
         delete_agent_catalog_override()
         await self._repository.clear_default()
+        return await self.get_config()
+
+    async def replace_catalog(self, catalog: AgentCatalogDefinition) -> AgentCatalogConfigRead:
+        payload = catalog.model_dump(mode="json")
+        save_agent_catalog_override_payload(payload)
+        await self._repository.upsert_default(
+            override_yaml=render_catalog_yaml(payload),
+            override_json=payload,
+        )
         return await self.get_config()
 
     async def _load_override_payload(self) -> dict[str, Any] | None:
