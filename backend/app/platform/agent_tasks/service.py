@@ -619,6 +619,8 @@ class AgentTaskService:
         result = None
         if job is not None and job.result_json is not None:
             result = AgentTaskResult.model_validate(job.result_json)
+        elif isinstance(step.output_json, dict) and step.output_json.get("result") is not None:
+            result = AgentTaskResult.model_validate(step.output_json["result"])
         return AgentTaskRead(
             task_id=task_id,
             state=TaskState(run.status),
