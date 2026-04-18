@@ -32,6 +32,7 @@ a {
 button,
 input,
 textarea,
+select,
 code {
   font: inherit;
 }
@@ -174,6 +175,14 @@ textarea {
   resize: vertical;
 }
 
+select {
+  width: 100%;
+  border-radius: 14px;
+  border: 1px solid rgba(19, 33, 46, 0.12);
+  padding: 0.8rem 0.9rem;
+  background: rgba(255, 255, 255, 0.92);
+}
+
 button {
   border: 0;
   border-radius: 14px;
@@ -181,6 +190,16 @@ button {
   background: #18384f;
   color: #f6f8f2;
   cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.button--ghost {
+  background: rgba(24, 56, 79, 0.08);
+  color: #27465d;
 }
 
 .button-link {
@@ -238,6 +257,138 @@ button {
   gap: 1.5rem;
 }
 
+.agent-config-layout {
+  align-items: start;
+}
+
+.agent-config__section-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: start;
+}
+
+.agent-config__list {
+  display: grid;
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.agent-config__card {
+  border: 1px solid rgba(19, 33, 46, 0.08);
+  border-radius: 20px;
+  background: #fdfdfb;
+  overflow: hidden;
+}
+
+.agent-config__summary {
+  list-style: none;
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: center;
+  padding: 1rem 1.1rem;
+  cursor: pointer;
+}
+
+.agent-config__summary::-webkit-details-marker {
+  display: none;
+}
+
+.agent-config__summary strong {
+  display: block;
+}
+
+.agent-config__summary p {
+  margin: 0.2rem 0 0;
+  color: #67757f;
+  font-family: "SF Mono", "Monaco", "Cascadia Code", monospace;
+  font-size: 0.88rem;
+}
+
+.agent-config__summary--static {
+  cursor: default;
+}
+
+.agent-config__body {
+  display: grid;
+  gap: 1rem;
+  padding: 0 1.1rem 1.1rem;
+}
+
+.agent-config__grid {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.agent-config__grid--two {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.agent-config__grid--three {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.agent-config__flags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+
+.agent-config__workflow {
+  display: grid;
+  gap: 1rem;
+  padding: 1rem;
+  border-radius: 18px;
+  background: #f6f8f9;
+}
+
+.agent-config__workflow-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: center;
+}
+
+.agent-config__workflow-header h3,
+.agent-config__workflow-header h4 {
+  margin: 0;
+}
+
+.agent-config__steps {
+  display: grid;
+  gap: 1rem;
+}
+
+.agent-config__step {
+  display: grid;
+  gap: 1rem;
+  padding: 1rem;
+  border-radius: 16px;
+  border: 1px solid rgba(19, 33, 46, 0.08);
+  background: #ffffff;
+}
+
+.agent-config__actions {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.agent-config__action {
+  display: grid;
+  gap: 0.75rem;
+  padding: 0.85rem;
+  border-radius: 14px;
+  background: #f6f8f9;
+}
+
+.agent-config__action-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: center;
+}
+
 .config-preview {
   margin: 0;
   padding: 1rem;
@@ -266,6 +417,20 @@ button {
 @media (max-width: 1100px) {
   .config-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 900px) {
+  .agent-config__grid--two,
+  .agent-config__grid--three {
+    grid-template-columns: 1fr;
+  }
+
+  .agent-config__summary,
+  .agent-config__workflow-header,
+  .agent-config__action-header {
+    flex-direction: column;
+    align-items: start;
   }
 }
 

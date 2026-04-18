@@ -7,7 +7,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.db.session import get_db
 from app.platform.agents.config_service import AgentCatalogConfigService
 from app.platform.agents.repository import AgentCatalogConfigRepository
-from app.platform.agents.schemas import AgentCatalogConfigRead, AgentCatalogOverrideUpdate
+from app.platform.agents.schemas import (
+    AgentCatalogConfigRead,
+    AgentCatalogOverrideUpdate,
+    AgentCatalogStructuredUpdate,
+)
 
 router = APIRouter(prefix="/platform/agents", tags=["platform-agents"])
 
@@ -37,6 +41,20 @@ async def update_agent_catalog_override(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"Invalid YAML: {exc}",
         ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+
+
+@router.put("/config", response_model=AgentCatalogConfigRead)
+async def replace_agent_catalog(
+    request: AgentCatalogStructuredUpdate,
+    service: AgentCatalogConfigService = Depends(get_agent_catalog_config_service),
+) -> AgentCatalogConfigRead:
+    try:
+        return await service.replace_catalog(request.catalog)
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,

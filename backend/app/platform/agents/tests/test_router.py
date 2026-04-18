@@ -12,6 +12,7 @@ from app.platform.agents.schemas import AgentCatalogConfigRead
 class FakeAgentCatalogConfigService:
     def __init__(self) -> None:
         self.saved_yaml: str | None = None
+        self.saved_catalog: dict | None = None
         self.reset_called = False
 
     async def get_config(self) -> AgentCatalogConfigRead:
@@ -23,6 +24,11 @@ class FakeAgentCatalogConfigService:
 
     async def update_override_yaml(self, yaml_text: str) -> AgentCatalogConfigRead:
         self.saved_yaml = yaml_text.strip() or None
+        return await self.get_config()
+
+    async def replace_catalog(self, catalog) -> AgentCatalogConfigRead:
+        self.saved_catalog = catalog.model_dump(mode="json")
+        self.saved_yaml = "agents:\n  - id: reviewer\n"
         return await self.get_config()
 
     async def reset_override(self) -> AgentCatalogConfigRead:
@@ -75,6 +81,41 @@ def test_delete_agent_config_override_resets_state():
     assert response.status_code == 200
     assert client.app.state.fake_agent_catalog_config_service.reset_called is True
     assert response.json()["has_override"] is False
+
+
+def test_put_agent_config_replaces_structured_catalog():
+    client = build_client()
+
+    response = client.put(
+        "/api/platform/agents/config",
+        json={
+            "catalog": {
+                "agents": [
+                    {
+                        "id": "reviewer",
+                        "display_name": "Reviewer",
+                        "description": "Structured reviewer",
+                        "runtime": "review_runtime",
+                    }
+                ],
+                "runtimes": [
+                    {
+                        "key": "review_runtime",
+                        "task_class": "review",
+                        "route_profile": "implementation",
+                        "approval_mode": "required",
+                    }
+                ],
+            }
+        },
+    )
+
+    assert response.status_code == 200
+    assert client.app.state.fake_agent_catalog_config_service.saved_catalog is not None
+    assert (
+        client.app.state.fake_agent_catalog_config_service.saved_catalog["agents"][0]["description"]
+        == "Structured reviewer"
+    )
 
 
 def _build_config_read(
