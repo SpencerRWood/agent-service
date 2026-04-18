@@ -320,6 +320,115 @@ def test_streaming_chat_completion_emits_task_metadata_and_done_marker():
     assert "[DONE]" in body
 
 
+def test_inline_completed_task_returns_summary_without_waiting_for_stream():
+    class InlineCompletedTaskStore(FakeTaskStore):
+        async def create_task(self, request):
+            self.created_requests.append(request)
+            task_id = "task-inline"
+            task = AgentTaskRead(
+                task_id=task_id,
+                state=TaskState.COMPLETED,
+                envelope=AgentTaskEnvelope(
+                    task_id=task_id,
+                    run_id=task_id,
+                    step_id="step-1",
+                    correlation_id="corr-1",
+                    user_prompt=request.prompt,
+                    normalized_goal=request.prompt,
+                    task_class=request.task_class,
+                    public_agent_id=request.public_agent_id,
+                    runtime_key=request.runtime_key,
+                    agent_system_prompt=request.agent_system_prompt,
+                    agent_workflow=request.agent_workflow,
+                    target_repo=request.repo,
+                    target_branch=request.target_branch,
+                    execution_mode=request.execution_mode,
+                    allowed_backends=[BackendName.CODEX],
+                    preferred_backend=BackendName.CODEX,
+                    approval_policy=request.approval_policy,
+                    timeout_policy=request.timeout_policy or {"seconds": 900},
+                    return_artifacts=request.return_artifacts,
+                    metadata=request.metadata,
+                    dispatch=WorkerDispatchDecision(
+                        target_id="worker-b",
+                        route_profile=request.route_profile,
+                        reason="test",
+                    ),
+                ),
+                run=RunRead(
+                    id=task_id,
+                    prompt_id=None,
+                    intent_id=None,
+                    status="completed",
+                    started_at=None,
+                    completed_at="2026-04-10T00:00:02Z",
+                    failed_at=None,
+                    created_at="2026-04-10T00:00:00Z",
+                    updated_at="2026-04-10T00:00:02Z",
+                ),
+                step=RunStepRead(
+                    id="step-1",
+                    run_id=task_id,
+                    step_type=request.task_class.value,
+                    title=request.task_class.value,
+                    status="completed",
+                    sequence_index=0,
+                    input_json={},
+                    output_json={
+                        "result": {
+                            "state": "completed",
+                            "backend": "local_llm",
+                            "execution_mode": "opencode",
+                            "summary": "Planner produced the final answer inline.",
+                            "artifacts": [],
+                            "metrics": {},
+                            "completed_at": "2026-04-10T00:00:02Z",
+                        }
+                    },
+                    approval_request_id=None,
+                    tool_invocation_id=None,
+                    artifact_id=None,
+                    started_at=None,
+                    completed_at="2026-04-10T00:00:02Z",
+                    created_at="2026-04-10T00:00:00Z",
+                ),
+                job=None,
+                events=[],
+                approvals=[],
+                approval_decisions=[],
+                artifacts=[],
+                result=AgentTaskResult(
+                    state=TaskState.COMPLETED,
+                    backend=BackendName.LOCAL_LLM,
+                    execution_mode=ExecutionMode.OPENCODE,
+                    summary="Planner produced the final answer inline.",
+                    artifacts=[],
+                    metrics={},
+                    completed_at="2026-04-10T00:00:02Z",
+                ),
+            )
+            self.tasks[task_id] = task
+            return AgentTaskCreateResponse(task=task)
+
+    client = build_client(InlineCompletedTaskStore())
+
+    response = client.post(
+        "/api/v1/chat/completions",
+        json={
+            "model": "planner",
+            "messages": [{"role": "user", "content": "Make a short plan."}],
+            "stream": False,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["task"]["state"] == "completed"
+    assert (
+        payload["choices"][0]["message"]["content"] == "Planner produced the final answer inline."
+    )
+
+
 def test_streaming_enrichment_task_suppresses_progress_messages():
     client = build_client(FakeTaskStore())
 
