@@ -163,7 +163,11 @@ class OpenAICompatService:
         task,
     ) -> ChatCompletionResponse:
         if task.approval_pending:
-            content = "Task accepted but requires approval before execution can continue."
+            content = (
+                task.summary
+                if task.summary
+                else "Task accepted but requires approval before execution can continue."
+            )
         elif task.state in {"completed", "deferred_until_reset"} and task.summary:
             content = task.summary
         else:

@@ -1,4 +1,6 @@
 import asyncio
+from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 from app.platform.agent_tasks.runtime import (
     OpenCodeExecutor,
@@ -11,6 +13,7 @@ from app.platform.agent_tasks.schemas import (
     AgentTaskEnvelope,
     BackendName,
     ExecutionMode,
+    ReasonCode,
     TaskArtifact,
     TaskClass,
     TaskState,
@@ -130,3 +133,37 @@ def test_opencode_runtime_honors_explicit_codex_for_inspect_repo():
     assert result.backend == BackendName.CODEX
     assert result.raw_output["backend"] == "codex"
     assert result.workflow_outcome == WorkflowOutcome.SUCCESS
+
+
+def test_opencode_runtime_requests_approval_for_available_coding_fallback(monkeypatch):
+    runtime = OpenCodeRuntime(executor=OpenCodeExecutor(dry_run=False))
+    reporter = RecordingReporter()
+
+    async def fake_preflight(*, backend, task_id, task_class, repo):
+        del task_id, task_class, repo
+        available = backend in {BackendName.CODEX, BackendName.COPILOT_CLI}
+        return SimpleNamespace(
+            available=available,
+            reason_code=(
+                ReasonCode.CODEX_AVAILABLE
+                if backend == BackendName.CODEX and available
+                else ReasonCode.COPILOT_AVAILABLE
+                if backend == BackendName.COPILOT_CLI and available
+                else ReasonCode.BACKEND_UNAVAILABLE
+            ),
+            retry_after=datetime.now(UTC) + timedelta(minutes=15),
+        )
+
+    async def fake_execute(*, work_package, backend):
+        del work_package, backend
+        raise AssertionError("execute should not run before fallback approval")
+
+    monkeypatch.setattr(runtime._executor._adapter, "preflight", fake_preflight)
+    monkeypatch.setattr(runtime._executor._adapter, "execute", fake_execute)
+
+    result = asyncio.run(runtime.execute(build_envelope(), reporter))
+
+    assert result.state == TaskState.PENDING_APPROVAL
+    assert result.backend == BackendName.CODEX
+    assert result.raw_output["suggested_backend"] == "codex"
+    assert result.raw_output["available_backends"] == ["codex", "copilot_cli"]
