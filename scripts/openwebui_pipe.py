@@ -395,6 +395,24 @@ class Pipe:
         response.raise_for_status()
         return response.json()
 
+    async def _post_task_decision(
+        self,
+        client: httpx.AsyncClient,
+        path: str,
+        *,
+        decided_by: str | None = None,
+        comment: str | None = None,
+    ) -> dict[str, Any]:
+        response = await client.post(
+            path,
+            json={
+                "decided_by": decided_by,
+                "comment": comment,
+            },
+        )
+        response.raise_for_status()
+        return response.json()
+
     def _extract_completion_text(self, completion: dict[str, Any]) -> str:
         choices = completion.get("choices") or []
         if not choices:
@@ -426,6 +444,18 @@ class Pipe:
 
         return "\n".join(lines)
 
+    def _confirmation_accepted(self, response: Any) -> bool:
+        if isinstance(response, bool):
+            return response
+        if isinstance(response, dict):
+            for key in ("confirmed", "accepted", "approved", "ok", "value"):
+                value = response.get(key)
+                if isinstance(value, bool):
+                    return value
+        if isinstance(response, str):
+            return response.strip().lower() in {"true", "yes", "y", "approve", "approved", "ok"}
+        return bool(response)
+
     async def _stream_task(
         self,
         client: httpx.AsyncClient,
@@ -434,9 +464,10 @@ class Pipe:
         *,
         suppress_status: bool = False,
         agent_label: str = "Agent",
-    ) -> str:
+    ) -> dict[str, Any]:
         terminal_status = "unknown"
         last_visible_status: Optional[str] = None
+        pending_approval_request: Optional[dict[str, Any]] = None
 
         async def emit_visible_status(
             description: str,
@@ -544,6 +575,7 @@ class Pipe:
                             await emit_visible_status(message)
 
                 elif current_event == "approval":
+                    pending_approval_request = dict(event)
                     await emit_visible_status(
                         "Approval is required before execution can continue.",
                     )
@@ -572,7 +604,10 @@ class Pipe:
                     )
                     break
 
-        return terminal_status
+        return {
+            "terminal_status": terminal_status,
+            "approval_request": pending_approval_request,
+        }
 
     async def pipe(
         self,
@@ -657,13 +692,15 @@ class Pipe:
                         )
                     return f"{completion_text or 'Completed.'}{debug_block}"
 
-                terminal_status = await self._stream_task(
+                stream_result = await self._stream_task(
                     client,
                     stream_url,
                     __event_emitter__,
                     suppress_status=is_enrichment,
                     agent_label=agent_label,
                 )
+                terminal_status = str(stream_result.get("terminal_status") or "unknown")
+                approval_request = stream_result.get("approval_request") or {}
 
                 task_read = await self._read_task(client, task_id)
                 final_state = str(
@@ -672,6 +709,81 @@ class Pipe:
                 summary = task_read.get("summary")
                 approval_pending = bool(task_read.get("approval_pending"))
                 links = task_read.get("links") or {}
+
+                if (
+                    approval_pending or final_state == "pending_approval"
+                ) and str(approval_request.get("policy_key") or "") == "agent_task_backend_fallback":
+                    confirmation_message = str(
+                        summary
+                        or approval_request.get("reason")
+                        or "An alternative backend is available. Approve to continue."
+                    ).strip()
+                    if __event_call__ and links.get("approve_url") and links.get("reject_url"):
+                        decision = await __event_call__(
+                            {
+                                "type": "confirmation",
+                                "data": {
+                                    "title": "Use Alternative Backend?",
+                                    "message": confirmation_message,
+                                },
+                            }
+                        )
+                        if self._confirmation_accepted(decision):
+                            await self._emit_status(
+                                __event_emitter__,
+                                "Approval recorded. Continuing execution...",
+                                suppress=is_enrichment,
+                            )
+                            await self._post_task_decision(
+                                client,
+                                str(links["approve_url"]),
+                                decided_by=(__user__ or {}).get("email")
+                                or (__user__ or {}).get("name")
+                                or (__user__ or {}).get("id"),
+                                comment="Approved in Open WebUI fallback confirmation.",
+                            )
+                            stream_result = await self._stream_task(
+                                client,
+                                stream_url,
+                                __event_emitter__,
+                                suppress_status=is_enrichment,
+                                agent_label=agent_label,
+                            )
+                            terminal_status = str(stream_result.get("terminal_status") or "unknown")
+                            task_read = await self._read_task(client, task_id)
+                            final_state = str(
+                                task_read.get("state") or terminal_status or task_state
+                            )
+                            summary = task_read.get("summary")
+                            approval_pending = bool(task_read.get("approval_pending"))
+                            links = task_read.get("links") or {}
+                        else:
+                            await self._post_task_decision(
+                                client,
+                                str(links["reject_url"]),
+                                decided_by=(__user__ or {}).get("email")
+                                or (__user__ or {}).get("name")
+                                or (__user__ or {}).get("id"),
+                                comment="Rejected in Open WebUI fallback confirmation.",
+                            )
+                            await self._emit_status(
+                                __event_emitter__,
+                                "Task was rejected.",
+                                done=True,
+                                suppress=is_enrichment,
+                            )
+                            debug_block = ""
+                            if self.valves.INCLUDE_DEBUG_BLOCK and not is_enrichment:
+                                debug_block = "\n\n" + self._task_block(
+                                    {
+                                        "id": task_id,
+                                        "state": "rejected",
+                                        "stream_url": links.get("stream_url") or stream_url,
+                                        "approve_url": links.get("approve_url"),
+                                        "reject_url": links.get("reject_url"),
+                                    }
+                                )
+                            return f"Task was rejected before execution completed.{debug_block}"
 
                 if final_state in {"completed", "deferred_until_reset"} and isinstance(
                     summary, str

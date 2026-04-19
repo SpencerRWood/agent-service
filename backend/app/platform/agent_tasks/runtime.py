@@ -215,6 +215,11 @@ class OpenCodeExecutor:
 
     def _select_backend(self, envelope: AgentTaskEnvelope) -> BackendSelection:
         preferred = envelope.preferred_backend or envelope.allowed_backends[0]
+        if preferred in envelope.allowed_backends and preferred != BackendName.LOCAL_LLM:
+            return BackendSelection(
+                backend=preferred,
+                reason_codes=[ReasonCode.TASK_CLASS_MATCH],
+            )
         if (
             envelope.task_class == TaskClass.INSPECT_REPO
             and preferred == BackendName.CODEX
@@ -264,19 +269,19 @@ class OpenCodeExecutor:
         selection: BackendSelection,
         reporter: TaskProgressReporter,
     ) -> BackendSelection | AgentTaskResult:
-        candidates = [selection.backend]
-        if (
-            BackendName.COPILOT_CLI in envelope.allowed_backends
-            and selection.backend != BackendName.COPILOT_CLI
-        ):
-            candidates.append(BackendName.COPILOT_CLI)
-        if (
-            BackendName.LOCAL_LLM in envelope.allowed_backends
-            and selection.backend != BackendName.LOCAL_LLM
-        ):
-            candidates.append(BackendName.LOCAL_LLM)
+        candidates: list[BackendName] = []
+
+        def add_candidate(backend: BackendName) -> None:
+            if backend in envelope.allowed_backends and backend not in candidates:
+                candidates.append(backend)
+
+        add_candidate(selection.backend)
+        add_candidate(BackendName.CODEX)
+        add_candidate(BackendName.COPILOT_CLI)
+        add_candidate(BackendName.LOCAL_LLM)
 
         deferred_until: datetime | None = None
+        available_alternatives: list[BackendName] = []
         for index, backend in enumerate(candidates):
             preflight = await self._preflight_backend(envelope, backend)
             await reporter.publish(
@@ -292,6 +297,20 @@ class OpenCodeExecutor:
                 },
             )
             if preflight.available:
+                if (
+                    selection.backend == BackendName.LOCAL_LLM
+                    and backend != BackendName.LOCAL_LLM
+                    and envelope.task_class
+                    in {
+                        TaskClass.CLASSIFY_ONLY,
+                        TaskClass.ANSWER_QUESTION,
+                        TaskClass.PLAN_ONLY,
+                        TaskClass.SUMMARIZE,
+                        TaskClass.ANALYZE,
+                    }
+                ):
+                    available_alternatives.append(backend)
+                    continue
                 reason_codes = list(selection.reason_codes)
                 if backend == BackendName.CODEX:
                     reason_codes.append(ReasonCode.CODEX_AVAILABLE)
@@ -311,6 +330,26 @@ class OpenCodeExecutor:
                 deferred_until is None or preflight.retry_after > deferred_until
             ):
                 deferred_until = preflight.retry_after
+
+        if available_alternatives:
+            suggested_backend = available_alternatives[0]
+            backend_labels = ", ".join(backend.value for backend in available_alternatives)
+            return AgentTaskResult(
+                state=TaskState.PENDING_APPROVAL,
+                backend=suggested_backend,
+                execution_mode=ExecutionMode.OPENCODE,
+                summary=(
+                    "Local planner backend is unavailable. "
+                    f"{backend_labels} is available. Approve to continue with "
+                    f"{suggested_backend.value}."
+                ),
+                reason_code=ReasonCode.BACKEND_UNAVAILABLE.value,
+                raw_output={
+                    "suggested_backend": suggested_backend.value,
+                    "available_backends": [backend.value for backend in available_alternatives],
+                },
+                metrics={"executor": "opencode"},
+            )
 
         return AgentTaskResult(
             state=TaskState.DEFERRED_UNTIL_RESET,

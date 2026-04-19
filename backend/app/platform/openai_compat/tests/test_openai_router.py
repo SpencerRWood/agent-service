@@ -298,6 +298,120 @@ def test_approval_behavior_comes_from_runtime_mapping_not_agent_id():
     assert response.json()["task"]["state"] == "pending_approval"
 
 
+def test_pending_approval_response_prefers_task_summary_when_present():
+    class PendingApprovalSummaryTaskStore(FakeTaskStore):
+        async def create_task(self, request):
+            self.created_requests.append(request)
+            task_id = "task-1"
+            task = AgentTaskRead(
+                task_id=task_id,
+                state=TaskState.PENDING_APPROVAL,
+                envelope=AgentTaskEnvelope(
+                    task_id=task_id,
+                    run_id=task_id,
+                    step_id="step-1",
+                    correlation_id="corr-1",
+                    user_prompt=request.prompt,
+                    normalized_goal=request.prompt,
+                    task_class=request.task_class,
+                    public_agent_id=request.public_agent_id,
+                    runtime_key=request.runtime_key,
+                    agent_system_prompt=request.agent_system_prompt,
+                    agent_workflow=request.agent_workflow,
+                    target_repo=request.repo,
+                    target_branch=request.target_branch,
+                    execution_mode=request.execution_mode,
+                    allowed_backends=[BackendName.LOCAL_LLM, BackendName.CODEX],
+                    preferred_backend=BackendName.LOCAL_LLM,
+                    approval_policy=request.approval_policy,
+                    timeout_policy=request.timeout_policy or {"seconds": 900},
+                    return_artifacts=request.return_artifacts,
+                    metadata=request.metadata,
+                    dispatch=WorkerDispatchDecision(
+                        target_id="worker-b",
+                        route_profile=request.route_profile,
+                        reason="test",
+                    ),
+                ),
+                run=RunRead(
+                    id=task_id,
+                    prompt_id=None,
+                    intent_id=None,
+                    status="pending_approval",
+                    started_at=None,
+                    completed_at=None,
+                    failed_at=None,
+                    created_at="2026-04-10T00:00:00Z",
+                    updated_at="2026-04-10T00:00:00Z",
+                ),
+                step=RunStepRead(
+                    id="step-1",
+                    run_id=task_id,
+                    step_type=request.task_class.value,
+                    title=request.task_class.value,
+                    status="pending_approval",
+                    sequence_index=0,
+                    input_json={},
+                    output_json={},
+                    approval_request_id="approval-1",
+                    tool_invocation_id=None,
+                    artifact_id=None,
+                    started_at=None,
+                    completed_at=None,
+                    created_at="2026-04-10T00:00:00Z",
+                ),
+                job=None,
+                events=[],
+                approvals=[
+                    ApprovalRequestRead(
+                        id="approval-1",
+                        run_id=task_id,
+                        run_step_id="step-1",
+                        target_type="agent_task",
+                        target_id=task_id,
+                        status="pending",
+                        decision_type="yes_no",
+                        policy_key="agent_task_backend_fallback",
+                        reason="Local planner backend is unavailable. codex is available. Approve to continue with codex.",
+                        request_payload_json={"suggested_backend": "codex"},
+                        expires_at=None,
+                        created_at="2026-04-10T00:00:00Z",
+                        updated_at="2026-04-10T00:00:00Z",
+                    )
+                ],
+                approval_decisions=[],
+                artifacts=[],
+                result=AgentTaskResult(
+                    state=TaskState.PENDING_APPROVAL,
+                    backend=BackendName.CODEX,
+                    execution_mode=ExecutionMode.OPENCODE,
+                    summary="Local planner backend is unavailable. codex is available. Approve to continue with codex.",
+                    raw_output={"suggested_backend": "codex"},
+                    artifacts=[],
+                    metrics={},
+                ),
+            )
+            self.tasks[task_id] = task
+            return AgentTaskCreateResponse(task=task)
+
+    client = build_client(PendingApprovalSummaryTaskStore())
+
+    response = client.post(
+        "/api/v1/chat/completions",
+        json={
+            "model": "planner",
+            "messages": [{"role": "user", "content": "Give me a short plan."}],
+            "stream": False,
+        },
+    )
+
+    assert response.status_code == 200
+    assert (
+        response.json()["choices"][0]["message"]["content"]
+        == "Local planner backend is unavailable. codex is available. Approve to continue with codex."
+    )
+
+
 def test_streaming_chat_completion_emits_task_metadata_and_done_marker():
     client = build_client(FakeTaskStore())
 

@@ -489,6 +489,137 @@ def test_create_inline_plan_task_preserves_deferred_state(monkeypatch):
     )
 
 
+def test_create_inline_plan_task_requests_approval_for_backend_fallback(monkeypatch):
+    class FallbackRuntime:
+        async def execute(self, envelope, reporter):
+            del envelope, reporter
+            return AgentTaskResult(
+                state=TaskState.PENDING_APPROVAL,
+                backend=BackendName.CODEX,
+                execution_mode=ExecutionMode.OPENCODE,
+                summary="Local planner backend is unavailable. codex is available. Approve to continue with codex.",
+                reason_code="backend_unavailable",
+                raw_output={
+                    "suggested_backend": "codex",
+                    "available_backends": ["codex"],
+                },
+                artifacts=[],
+                metrics={"executor": "opencode"},
+            )
+
+    monkeypatch.setattr(
+        agent_task_service_module.OpenCodeRuntime,
+        "from_settings",
+        classmethod(lambda cls: FallbackRuntime()),
+    )
+
+    run_service = FakeRunService()
+    approval_service = FakeApprovalService()
+    approval_service.approvals_by_run = {"task-1": []}
+    approval_service.decisions_by_run = {"task-1": []}
+
+    service = AgentTaskService(
+        run_service=run_service,
+        event_service=FakeEventService(),
+        approval_service=approval_service,
+        artifact_service=FakeArtifactService(),
+        execution_target_service=FakeExecutionTargetService(),
+    )
+
+    response = asyncio.run(
+        service.create_task(
+            AgentTaskCreateRequest(
+                task_class=TaskClass.PLAN_ONLY,
+                public_agent_id="planner",
+                runtime_key="planner_runtime",
+                prompt="Give me a test plan",
+            )
+        )
+    )
+
+    assert response.task.state == TaskState.PENDING_APPROVAL
+    assert response.task.result is not None
+    assert response.task.result.summary == (
+        "Local planner backend is unavailable. codex is available. Approve to continue with codex."
+    )
+    assert response.task.approvals[0].policy_key == "agent_task_backend_fallback"
+    assert response.task.approvals[0].request_payload_json["suggested_backend"] == "codex"
+    assert run_service.runs["task-1"].status == TaskState.PENDING_APPROVAL.value
+
+
+def test_approve_task_resumes_inline_backend_fallback(monkeypatch):
+    results = [
+        AgentTaskResult(
+            state=TaskState.PENDING_APPROVAL,
+            backend=BackendName.CODEX,
+            execution_mode=ExecutionMode.OPENCODE,
+            summary="Local planner backend is unavailable. codex is available. Approve to continue with codex.",
+            reason_code="backend_unavailable",
+            raw_output={
+                "suggested_backend": "codex",
+                "available_backends": ["codex"],
+            },
+            artifacts=[],
+            metrics={"executor": "opencode"},
+        ),
+        AgentTaskResult(
+            state=TaskState.COMPLETED,
+            backend=BackendName.CODEX,
+            execution_mode=ExecutionMode.OPENCODE,
+            summary="Completed with codex after approval.",
+            raw_output={"backend": "codex"},
+            artifacts=[],
+            metrics={"executor": "opencode"},
+            completed_at=datetime.now(UTC),
+        ),
+    ]
+    executed_backends: list[BackendName] = []
+
+    class SequencedRuntime:
+        async def execute(self, envelope, reporter):
+            del reporter
+            executed_backends.append(envelope.preferred_backend)
+            return results.pop(0)
+
+    monkeypatch.setattr(
+        agent_task_service_module.OpenCodeRuntime,
+        "from_settings",
+        classmethod(lambda cls: SequencedRuntime()),
+    )
+
+    run_service = FakeRunService()
+    approval_service = FakeApprovalService()
+    approval_service.approvals_by_run = {"task-1": []}
+    approval_service.decisions_by_run = {"task-1": []}
+    service = AgentTaskService(
+        run_service=run_service,
+        event_service=FakeEventService(),
+        approval_service=approval_service,
+        artifact_service=FakeArtifactService(),
+        execution_target_service=FakeExecutionTargetService(),
+    )
+
+    created = asyncio.run(
+        service.create_task(
+            AgentTaskCreateRequest(
+                task_class=TaskClass.PLAN_ONLY,
+                public_agent_id="planner",
+                runtime_key="planner_runtime",
+                prompt="Give me a test plan",
+            )
+        )
+    )
+    assert created.task.state == TaskState.PENDING_APPROVAL
+
+    resumed = asyncio.run(service.approve_task("task-1", decided_by="manual-test"))
+
+    assert executed_backends == [BackendName.LOCAL_LLM, BackendName.CODEX]
+    assert resumed.state == TaskState.COMPLETED
+    assert resumed.result is not None
+    assert resumed.result.summary == "Completed with codex after approval."
+    assert run_service.runs["task-1"].status == TaskState.COMPLETED.value
+
+
 def test_list_public_tasks_hides_enrichment_runs_and_merges_metadata():
     run_service = FakeRunService()
     event_service = FakeEventService()

@@ -95,6 +95,8 @@ Check the container status:
 Check the web entrypoint:
 `curl -i http://localhost:${AGENT_SERVICE_HOST_PORT:-8080}/`
 
+For a broader multi-prompt validation pass across planner, RAG analyst, coder, reviewer, streaming, approval, and deferred flows, use [TESTING_README.md](/Users/spencerwood/Documents/Projects/agent-service/TESTING_README.md).
+
 ## Architecture
 
 The current execution path is:
