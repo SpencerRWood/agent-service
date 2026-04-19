@@ -3,10 +3,13 @@ from datetime import UTC, datetime
 
 from fastapi import HTTPException, status
 
+import app.platform.agent_tasks.service as agent_task_service_module
 from app.platform.agent_tasks.schemas import (
     AgentTaskCreateRequest,
     AgentTaskEnvelope,
+    AgentTaskResult,
     BackendName,
+    ExecutionMode,
     TaskClass,
     TaskState,
     WorkerDispatchDecision,
@@ -424,6 +427,66 @@ def test_create_task_reuses_recent_duplicate_by_idempotency_key():
 
     assert response.task.task_id == "task-existing"
     assert run_service.create_run_calls == 0
+
+
+def test_create_inline_plan_task_preserves_deferred_state(monkeypatch):
+    class DeferredRuntime:
+        async def execute(self, envelope, reporter):
+            del envelope, reporter
+            return AgentTaskResult(
+                state=TaskState.DEFERRED_UNTIL_RESET,
+                backend=BackendName.LOCAL_LLM,
+                execution_mode=ExecutionMode.OPENCODE,
+                summary="No backend is currently available. Task deferred until reset.",
+                reason_code="backend_unavailable",
+                raw_output={},
+                artifacts=[],
+                metrics={"executor": "opencode"},
+                completed_at=datetime.now(UTC),
+            )
+
+    monkeypatch.setattr(
+        agent_task_service_module.OpenCodeRuntime,
+        "from_settings",
+        classmethod(lambda cls: DeferredRuntime()),
+    )
+
+    run_service = FakeRunService()
+    approval_service = FakeApprovalService()
+    approval_service.approvals_by_run = {"task-1": []}
+    approval_service.decisions_by_run = {"task-1": []}
+
+    service = AgentTaskService(
+        run_service=run_service,
+        event_service=FakeEventService(),
+        approval_service=approval_service,
+        artifact_service=FakeArtifactService(),
+        execution_target_service=FakeExecutionTargetService(),
+    )
+
+    response = asyncio.run(
+        service.create_task(
+            AgentTaskCreateRequest(
+                task_class=TaskClass.PLAN_ONLY,
+                public_agent_id="planner",
+                runtime_key="planner_runtime",
+                prompt="Give me a test plan",
+            )
+        )
+    )
+
+    assert response.task.state == TaskState.DEFERRED_UNTIL_RESET
+    assert response.task.result is not None
+    assert (
+        response.task.result.summary
+        == "No backend is currently available. Task deferred until reset."
+    )
+    assert response.task.result.completed_at is not None
+    assert run_service.runs["task-1"].status == TaskState.DEFERRED_UNTIL_RESET.value
+    assert (
+        run_service.steps_by_run["task-1"][0].output_json["result"]["state"]
+        == TaskState.DEFERRED_UNTIL_RESET.value
+    )
 
 
 def test_list_public_tasks_hides_enrichment_runs_and_merges_metadata():

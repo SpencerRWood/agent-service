@@ -244,10 +244,10 @@ class AgentTaskService:
             )
             runtime = OpenCodeRuntime.from_settings()
             result = await runtime.execute(envelope, reporter)
-            await self._run_service.update_run_status(envelope.task_id, TaskState.COMPLETED.value)
+            await self._run_service.update_run_status(envelope.task_id, result.state.value)
             await self._run_service.update_step_status(
                 envelope.step_id,
-                status_value=TaskState.COMPLETED.value,
+                status_value=result.state.value,
                 output={"result": result.model_dump(mode="json")},
             )
             return AgentTaskCreateResponse(

@@ -196,6 +196,7 @@ class OpenCodeExecutor:
                 retry_after=_coerce_datetime(payload.get("retry_after") or payload.get("reset_at")),
                 raw_output=payload,
                 metrics={"executor": "opencode"},
+                completed_at=datetime.now(UTC),
             )
         return AgentTaskResult.model_validate(
             {
@@ -323,6 +324,7 @@ class OpenCodeExecutor:
                 "reason_codes": [ReasonCode.BACKEND_UNAVAILABLE.value],
             },
             metrics={"executor": "opencode"},
+            completed_at=datetime.now(UTC),
         )
 
     async def _preflight_backend(
@@ -488,6 +490,7 @@ class OpenCodeExecutor:
                 retry_after=datetime.now(UTC) + timedelta(minutes=15),
                 raw_output={"error": stderr},
                 metrics={"executor": "opencode"},
+                completed_at=datetime.now(UTC),
             )
         return AgentTaskResult(
             state=TaskState.FAILED,
