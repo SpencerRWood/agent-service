@@ -429,6 +429,116 @@ def test_inline_completed_task_returns_summary_without_waiting_for_stream():
     )
 
 
+def test_inline_deferred_task_returns_summary_without_waiting_for_stream():
+    class InlineDeferredTaskStore(FakeTaskStore):
+        async def create_task(self, request):
+            self.created_requests.append(request)
+            task_id = "task-inline-deferred"
+            task = AgentTaskRead(
+                task_id=task_id,
+                state=TaskState.DEFERRED_UNTIL_RESET,
+                envelope=AgentTaskEnvelope(
+                    task_id=task_id,
+                    run_id=task_id,
+                    step_id="step-1",
+                    correlation_id="corr-1",
+                    user_prompt=request.prompt,
+                    normalized_goal=request.prompt,
+                    task_class=request.task_class,
+                    public_agent_id=request.public_agent_id,
+                    runtime_key=request.runtime_key,
+                    agent_system_prompt=request.agent_system_prompt,
+                    agent_workflow=request.agent_workflow,
+                    target_repo=request.repo,
+                    target_branch=request.target_branch,
+                    execution_mode=request.execution_mode,
+                    allowed_backends=[BackendName.LOCAL_LLM],
+                    preferred_backend=BackendName.LOCAL_LLM,
+                    approval_policy=request.approval_policy,
+                    timeout_policy=request.timeout_policy or {"seconds": 900},
+                    return_artifacts=request.return_artifacts,
+                    metadata=request.metadata,
+                    dispatch=WorkerDispatchDecision(
+                        target_id="worker-b",
+                        route_profile=request.route_profile,
+                        reason="test",
+                    ),
+                ),
+                run=RunRead(
+                    id=task_id,
+                    prompt_id=None,
+                    intent_id=None,
+                    status="deferred_until_reset",
+                    started_at=None,
+                    completed_at="2026-04-10T00:00:02Z",
+                    failed_at=None,
+                    created_at="2026-04-10T00:00:00Z",
+                    updated_at="2026-04-10T00:00:02Z",
+                ),
+                step=RunStepRead(
+                    id="step-1",
+                    run_id=task_id,
+                    step_type=request.task_class.value,
+                    title=request.task_class.value,
+                    status="deferred_until_reset",
+                    sequence_index=0,
+                    input_json={},
+                    output_json={
+                        "result": {
+                            "state": "deferred_until_reset",
+                            "backend": "local_llm",
+                            "execution_mode": "opencode",
+                            "summary": "No backend is currently available. Task deferred until reset.",
+                            "artifacts": [],
+                            "metrics": {},
+                            "completed_at": "2026-04-10T00:00:02Z",
+                        }
+                    },
+                    approval_request_id=None,
+                    tool_invocation_id=None,
+                    artifact_id=None,
+                    started_at=None,
+                    completed_at="2026-04-10T00:00:02Z",
+                    created_at="2026-04-10T00:00:00Z",
+                ),
+                job=None,
+                events=[],
+                approvals=[],
+                approval_decisions=[],
+                artifacts=[],
+                result=AgentTaskResult(
+                    state=TaskState.DEFERRED_UNTIL_RESET,
+                    backend=BackendName.LOCAL_LLM,
+                    execution_mode=ExecutionMode.OPENCODE,
+                    summary="No backend is currently available. Task deferred until reset.",
+                    artifacts=[],
+                    metrics={},
+                    completed_at="2026-04-10T00:00:02Z",
+                ),
+            )
+            self.tasks[task_id] = task
+            return AgentTaskCreateResponse(task=task)
+
+    client = build_client(InlineDeferredTaskStore())
+
+    response = client.post(
+        "/api/v1/chat/completions",
+        json={
+            "model": "planner",
+            "messages": [{"role": "user", "content": "Give me a test plan."}],
+            "stream": False,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["task"]["state"] == "deferred_until_reset"
+    assert (
+        payload["choices"][0]["message"]["content"]
+        == "No backend is currently available. Task deferred until reset."
+    )
+
+
 def test_streaming_enrichment_task_suppresses_progress_messages():
     client = build_client(FakeTaskStore())
 

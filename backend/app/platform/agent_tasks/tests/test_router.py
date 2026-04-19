@@ -283,6 +283,38 @@ def test_stream_agent_task_emits_terminal_for_inline_completed_task():
     assert '"status": "completed"' in body
 
 
+def test_stream_agent_task_emits_terminal_for_inline_deferred_task():
+    task_store = FakeTaskStore()
+    inline_deferred_task = build_task(task_id="task-inline-deferred")
+    inline_deferred_task.state = TaskState.DEFERRED_UNTIL_RESET
+    inline_deferred_task.run.status = "deferred_until_reset"
+    inline_deferred_task.run.completed_at = "2026-04-10T00:00:02Z"
+    inline_deferred_task.step.status = "deferred_until_reset"
+    inline_deferred_task.step.completed_at = "2026-04-10T00:00:02Z"
+    inline_deferred_task.approvals = []
+    inline_deferred_task.job = None
+    inline_deferred_task.result = AgentTaskResult(
+        state=TaskState.DEFERRED_UNTIL_RESET,
+        backend=BackendName.LOCAL_LLM,
+        execution_mode=ExecutionMode.OPENCODE,
+        summary="No backend is currently available. Task deferred until reset.",
+        artifacts=[],
+        metrics={},
+        completed_at="2026-04-10T00:00:02Z",
+    )
+    task_store.task = inline_deferred_task
+    client = build_client(task_store)
+
+    with client.stream("GET", "/api/agent-tasks/task-inline-deferred/stream") as response:
+        body = "".join(
+            chunk.decode() if isinstance(chunk, bytes) else chunk for chunk in response.iter_text()
+        )
+
+    assert response.status_code == 200
+    assert "event: terminal\n" in body
+    assert '"status": "deferred_until_reset"' in body
+
+
 def test_get_agent_task_returns_compact_public_view():
     client = build_client()
 

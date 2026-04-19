@@ -640,7 +640,13 @@ class Pipe:
                     suppress=is_enrichment,
                 )
 
-                if task_state == "completed":
+                if task_state in {"completed", "deferred_until_reset"}:
+                    await self._emit_status(
+                        __event_emitter__,
+                        "Response complete.",
+                        done=True,
+                        suppress=is_enrichment,
+                    )
                     debug_block = ""
                     if self.valves.INCLUDE_DEBUG_BLOCK and not is_enrichment:
                         debug_block = (
@@ -667,11 +673,15 @@ class Pipe:
                 approval_pending = bool(task_read.get("approval_pending"))
                 links = task_read.get("links") or {}
 
-                if (
-                    final_state == "completed"
-                    and isinstance(summary, str)
-                    and summary.strip()
-                ):
+                if final_state in {"completed", "deferred_until_reset"} and isinstance(
+                    summary, str
+                ) and summary.strip():
+                    await self._emit_status(
+                        __event_emitter__,
+                        "Response complete.",
+                        done=True,
+                        suppress=is_enrichment,
+                    )
                     debug_block = ""
                     if self.valves.INCLUDE_DEBUG_BLOCK and not is_enrichment:
                         debug_block = (
@@ -732,11 +742,23 @@ class Pipe:
                     return f"Task was rejected before execution completed.{debug_block}"
 
                 if final_state == "failed":
+                    await self._emit_status(
+                        __event_emitter__,
+                        "Task failed.",
+                        done=True,
+                        suppress=is_enrichment,
+                    )
                     raise Exception("Agent Services task failed.")
 
                 message = (
                     completion_text
                     or "Task accepted. Follow the task stream for progress."
+                )
+                await self._emit_status(
+                    __event_emitter__,
+                    "Response complete.",
+                    done=True,
+                    suppress=is_enrichment,
                 )
                 debug_block = ""
                 if self.valves.INCLUDE_DEBUG_BLOCK and not is_enrichment:
