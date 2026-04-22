@@ -97,6 +97,14 @@ Check the web entrypoint:
 
 For a broader multi-prompt validation pass across planner, RAG analyst, coder, reviewer, streaming, approval, and deferred flows, use [TESTING_README.md](/Users/spencerwood/Documents/Projects/agent-service/TESTING_README.md).
 
+Run the post-deploy smoke test after a production redeploy:
+
+```sh
+AGENT_BASE_URL=https://agents.woodhost.cloud/api scripts/post_deploy_smoke_test.sh
+```
+
+The post-deploy smoke test first looks for an enabled execution target that supports `agent.run_task`. If no worker target exists, it exits successfully with a skipped result and does not submit prompts. If a worker exists, it verifies health, model discovery, worker-backed execution, and planner execution.
+
 ## Architecture
 
 The current execution path is:
