@@ -11,6 +11,8 @@ from app.platform.agents.schemas import (
     AgentCatalogConfigRead,
     AgentCatalogOverrideUpdate,
     AgentCatalogStructuredUpdate,
+    BackendModelsConfigRead,
+    BackendModelsUpdate,
 )
 
 router = APIRouter(prefix="/platform/agents", tags=["platform-agents"])
@@ -67,3 +69,27 @@ async def reset_agent_catalog_override(
     service: AgentCatalogConfigService = Depends(get_agent_catalog_config_service),
 ) -> AgentCatalogConfigRead:
     return await service.reset_override()
+
+
+@router.get("/backend-models", response_model=BackendModelsConfigRead)
+async def get_backend_models_config(
+    service: AgentCatalogConfigService = Depends(get_agent_catalog_config_service),
+) -> BackendModelsConfigRead:
+    return await service.get_backend_models_config()
+
+
+@router.put("/backend-models", response_model=BackendModelsConfigRead)
+async def replace_backend_models(
+    request: BackendModelsUpdate,
+    service: AgentCatalogConfigService = Depends(get_agent_catalog_config_service),
+) -> BackendModelsConfigRead:
+    return await service.replace_backend_models(
+        {backend.value: model for backend, model in request.models.items()}
+    )
+
+
+@router.delete("/backend-models", response_model=BackendModelsConfigRead)
+async def reset_backend_models(
+    service: AgentCatalogConfigService = Depends(get_agent_catalog_config_service),
+) -> BackendModelsConfigRead:
+    return await service.reset_backend_models()

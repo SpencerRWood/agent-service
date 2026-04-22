@@ -83,13 +83,19 @@ class OpenCodeCLIAdapter:
         *,
         work_package: ExecutorWorkPackage,
         backend: BackendName,
+        model_overrides: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         argv = shlex.split(self._command)
         if not argv:
             raise OpenCodeAdapterError("OpenCode command is not configured.")
 
         command_result = await self._runner.run(
-            self._build_run_argv(argv, work_package=work_package, backend=backend)
+            self._build_run_argv(
+                argv,
+                work_package=work_package,
+                backend=backend,
+                model_overrides=model_overrides,
+            )
         )
         if command_result.exit_code != 0:
             raise OpenCodeAdapterError(_combine_output(command_result))
@@ -127,9 +133,12 @@ class OpenCodeCLIAdapter:
         *,
         work_package: ExecutorWorkPackage,
         backend: BackendName,
+        model_overrides: dict[str, str] | None = None,
     ) -> list[str]:
         run_argv = [*argv, "run", "--format", "json"]
-        model_override = settings.opencode_backend_models.get(backend.value)
+        model_override = (model_overrides or {}).get(
+            backend.value
+        ) or settings.opencode_backend_models.get(backend.value)
         if model_override:
             run_argv.extend(["--model", model_override])
         project_path = work_package.project.project_path if work_package.project else None

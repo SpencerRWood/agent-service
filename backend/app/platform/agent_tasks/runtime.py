@@ -173,6 +173,7 @@ class OpenCodeExecutor:
             payload = await self._adapter.execute(
                 work_package=self._build_work_package(envelope, preflight.backend),
                 backend=preflight.backend,
+                model_overrides=envelope.backend_models,
             )
         except OpenCodeRoutingError:
             raise
@@ -503,6 +504,7 @@ class OpenCodeExecutor:
                 "preferred_backend": envelope.preferred_backend.value
                 if envelope.preferred_backend is not None
                 else None,
+                "backend_models": envelope.backend_models,
                 "execution_target": envelope.dispatch.target_id,
                 "metadata": envelope.metadata,
                 "approval_policy": envelope.approval_policy,

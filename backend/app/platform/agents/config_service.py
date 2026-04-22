@@ -4,6 +4,7 @@ from typing import Any
 
 import yaml
 
+from app.core.settings import settings
 from app.platform.agents.catalog import (
     OVERRIDE_CATALOG_PATH,
     delete_agent_catalog_override,
@@ -15,7 +16,11 @@ from app.platform.agents.catalog import (
     validate_catalog_payload,
 )
 from app.platform.agents.repository import AgentCatalogConfigRepository
-from app.platform.agents.schemas import AgentCatalogConfigRead, AgentCatalogDefinition
+from app.platform.agents.schemas import (
+    AgentCatalogConfigRead,
+    AgentCatalogDefinition,
+    BackendModelsConfigRead,
+)
 
 
 class AgentCatalogConfigService:
@@ -77,6 +82,31 @@ class AgentCatalogConfigService:
         )
         return await self.get_config()
 
+    async def get_backend_models_config(self) -> BackendModelsConfigRead:
+        record = await self._repository.get_default()
+        override_models = _normalize_backend_models(
+            record.backend_models_json if record is not None else None
+        )
+        default_models = _normalize_backend_models(settings.opencode_backend_models) or {}
+        effective_models = {**default_models, **(override_models or {})}
+        return BackendModelsConfigRead(
+            default_models=default_models,
+            override_models=override_models,
+            effective_models=effective_models,
+        )
+
+    async def replace_backend_models(
+        self,
+        models: dict[str, str],
+    ) -> BackendModelsConfigRead:
+        normalized = _normalize_backend_models(models) or {}
+        await self._repository.update_backend_models(backend_models=normalized)
+        return await self.get_backend_models_config()
+
+    async def reset_backend_models(self) -> BackendModelsConfigRead:
+        await self._repository.update_backend_models(backend_models=None)
+        return await self.get_backend_models_config()
+
     async def _load_override_payload(self) -> dict[str, Any] | None:
         record = await self._repository.get_default()
         if record is not None and record.override_json is not None:
@@ -86,3 +116,14 @@ class AgentCatalogConfigService:
             save_agent_catalog_override_payload(payload)
             return payload
         return load_agent_catalog_override_payload()
+
+
+def _normalize_backend_models(value: dict | None) -> dict[str, str] | None:
+    if not value:
+        return None
+    normalized = {
+        str(backend).strip(): str(model).strip()
+        for backend, model in value.items()
+        if str(backend).strip() and str(model).strip()
+    }
+    return normalized or None

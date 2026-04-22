@@ -180,6 +180,25 @@ class FakeApprovalService:
         self.approvals_by_run.setdefault(request.run_id, []).append(approval)
         return approval
 
+    async def create_decision(self, approval_id, request):
+        for run_id, approvals in self.approvals_by_run.items():
+            for index, approval in enumerate(approvals):
+                if approval.id != approval_id:
+                    continue
+                approvals[index] = approval.model_copy(update={"status": request.decision})
+                decision = ApprovalDecisionRead(
+                    id="decision-created",
+                    approval_request_id=approval_id,
+                    decision=request.decision,
+                    decided_by=request.decided_by,
+                    comment=request.comment,
+                    decision_payload_json=request.payload,
+                    created_at="2026-04-10T00:01:00Z",
+                )
+                self.decisions_by_run.setdefault(run_id, []).append(decision)
+                return decision
+        raise AssertionError(f"Unknown approval {approval_id}")
+
     async def list_for_run(self, run_id):
         return self.approvals_by_run.get(
             run_id,

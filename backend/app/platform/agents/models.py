@@ -14,6 +14,7 @@ class AgentCatalogConfigRecord(Base):
     config_key: Mapped[str] = mapped_column(String(64), primary_key=True)
     override_yaml: Mapped[str | None] = mapped_column(Text, nullable=True)
     override_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    backend_models_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

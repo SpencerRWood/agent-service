@@ -13,7 +13,9 @@ class FakeAgentCatalogConfigService:
     def __init__(self) -> None:
         self.saved_yaml: str | None = None
         self.saved_catalog: dict | None = None
+        self.saved_backend_models: dict[str, str] | None = None
         self.reset_called = False
+        self.backend_models_reset_called = False
 
     async def get_config(self) -> AgentCatalogConfigRead:
         return _build_config_read(
@@ -35,6 +37,25 @@ class FakeAgentCatalogConfigService:
         self.reset_called = True
         self.saved_yaml = None
         return await self.get_config()
+
+    async def get_backend_models_config(self):
+        return {
+            "default_models": {"local_llm": "openrouter/default"},
+            "override_models": self.saved_backend_models,
+            "effective_models": {
+                "local_llm": "openrouter/default",
+                **(self.saved_backend_models or {}),
+            },
+        }
+
+    async def replace_backend_models(self, models: dict[str, str]):
+        self.saved_backend_models = models
+        return await self.get_backend_models_config()
+
+    async def reset_backend_models(self):
+        self.backend_models_reset_called = True
+        self.saved_backend_models = None
+        return await self.get_backend_models_config()
 
 
 def build_client() -> TestClient:
@@ -116,6 +137,29 @@ def test_put_agent_config_replaces_structured_catalog():
         client.app.state.fake_agent_catalog_config_service.saved_catalog["agents"][0]["description"]
         == "Structured reviewer"
     )
+
+
+def test_backend_models_routes_manage_model_mapping():
+    client = build_client()
+
+    get_response = client.get("/api/platform/agents/backend-models")
+    assert get_response.status_code == 200
+    assert get_response.json()["effective_models"]["local_llm"] == "openrouter/default"
+
+    put_response = client.put(
+        "/api/platform/agents/backend-models",
+        json={"models": {"local_llm": "openrouter/planner", "codex": "openrouter/coder"}},
+    )
+    assert put_response.status_code == 200
+    assert client.app.state.fake_agent_catalog_config_service.saved_backend_models == {
+        "local_llm": "openrouter/planner",
+        "codex": "openrouter/coder",
+    }
+    assert put_response.json()["effective_models"]["codex"] == "openrouter/coder"
+
+    delete_response = client.delete("/api/platform/agents/backend-models")
+    assert delete_response.status_code == 200
+    assert client.app.state.fake_agent_catalog_config_service.backend_models_reset_called is True
 
 
 def _build_config_read(

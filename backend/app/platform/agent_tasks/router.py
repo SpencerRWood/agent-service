@@ -20,6 +20,8 @@ from app.platform.agent_tasks.schemas import (
 )
 from app.platform.agent_tasks.service import AgentTaskService, build_agent_task_service
 from app.platform.agent_tasks.task_store import TaskStore, get_task_store
+from app.platform.agents.config_service import AgentCatalogConfigService
+from app.platform.agents.repository import AgentCatalogConfigRepository
 from app.platform.approvals.repository import ApprovalRepository
 from app.platform.artifacts.repository import ArtifactRepository
 from app.platform.artifacts.schemas import ArtifactCreate
@@ -39,6 +41,7 @@ def get_agent_task_service(db: AsyncSession = Depends(get_db)) -> AgentTaskServi
         approval_repository=ApprovalRepository(db),
         artifact_repository=ArtifactRepository(db),
         execution_target_service=ExecutionTargetService(ExecutionTargetRepository(db)),
+        agent_config_service=AgentCatalogConfigService(AgentCatalogConfigRepository(db)),
     )
 
 

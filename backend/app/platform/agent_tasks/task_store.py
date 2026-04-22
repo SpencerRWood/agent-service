@@ -6,6 +6,7 @@ from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db.session import get_db
+from app.platform.agent_tasks.links import build_task_action_url
 from app.platform.agent_tasks.schemas import (
     AgentTaskCreateRequest,
     AgentTaskRead,
@@ -70,9 +71,11 @@ def to_public_task(task: AgentTaskRead) -> PublicAgentTaskRead:
         summary=summary,
         approval_pending=approval_pending,
         links=PublicTaskActionLinks(
-            stream_url=f"/api/agent-tasks/{task.task_id}/stream",
-            approve_url=f"/api/agent-tasks/{task.task_id}/approve" if approval_pending else None,
-            reject_url=f"/api/agent-tasks/{task.task_id}/reject" if approval_pending else None,
+            stream_url=build_task_action_url(task.task_id, "stream"),
+            approve_url=build_task_action_url(task.task_id, "approve")
+            if approval_pending
+            else None,
+            reject_url=build_task_action_url(task.task_id, "reject") if approval_pending else None,
         ),
     )
 

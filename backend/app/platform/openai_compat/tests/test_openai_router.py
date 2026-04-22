@@ -699,3 +699,27 @@ def test_chat_completion_prefers_request_identifiers_for_idempotency():
     assert response.status_code == 200
     assert task_store.created_requests[0].metadata["idempotency_scope"] == "request_identifiers"
     assert task_store.created_requests[0].metadata["idempotency_window_seconds"] == 900
+
+
+def test_chat_completion_uses_absolute_task_urls_when_base_url_configured(monkeypatch):
+    monkeypatch.setattr(
+        settings,
+        "agent_services_base_url",
+        "https://agents.example.com",
+    )
+    client = build_client(FakeTaskStore())
+
+    response = client.post(
+        "/api/v1/chat/completions",
+        json={
+            "model": "planner",
+            "messages": [{"role": "user", "content": "Plan the rollout."}],
+            "stream": False,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert (
+        payload["task"]["stream_url"] == "https://agents.example.com/api/agent-tasks/task-1/stream"
+    )
