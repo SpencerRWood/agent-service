@@ -88,6 +88,7 @@ class OpenCodeCLIAdapter:
         argv = shlex.split(self._command)
         if not argv:
             raise OpenCodeAdapterError("OpenCode command is not configured.")
+        selected_model = _resolve_model_override(backend, model_overrides)
 
         command_result = await self._runner.run(
             self._build_run_argv(
@@ -111,6 +112,7 @@ class OpenCodeCLIAdapter:
         summary = extracted_text or "OpenCode task finished."
         return {
             "backend": backend.value,
+            "model": selected_model,
             "summary": summary,
             "workflow_outcome": _extract_workflow_outcome(events),
             "artifacts": [
@@ -118,11 +120,19 @@ class OpenCodeCLIAdapter:
                     "artifact_type": "execution_result",
                     "title": "Task Result",
                     "content": {"markdown": summary},
-                    "provenance": {"backend": backend.value, "executor": "opencode"},
+                    "provenance": {
+                        "backend": backend.value,
+                        "executor": "opencode",
+                        "model": selected_model,
+                    },
                     "status": "completed",
                 }
             ],
-            "metrics": {"executor": "opencode", "format": "json_events"},
+            "metrics": {
+                "executor": "opencode",
+                "format": "json_events",
+                "model": selected_model,
+            },
             "events": events,
             "completed_at": datetime.now(UTC).isoformat(),
         }
@@ -136,9 +146,7 @@ class OpenCodeCLIAdapter:
         model_overrides: dict[str, str] | None = None,
     ) -> list[str]:
         run_argv = [*argv, "run", "--format", "json"]
-        model_override = (model_overrides or {}).get(
-            backend.value
-        ) or settings.opencode_backend_models.get(backend.value)
+        model_override = _resolve_model_override(backend, model_overrides)
         if model_override:
             run_argv.extend(["--model", model_override])
         project_path = work_package.project.project_path if work_package.project else None
@@ -146,6 +154,15 @@ class OpenCodeCLIAdapter:
             run_argv.extend(["--dir", project_path])
         run_argv.append(_render_message(work_package, backend))
         return run_argv
+
+
+def _resolve_model_override(
+    backend: BackendName,
+    model_overrides: dict[str, str] | None = None,
+) -> str | None:
+    return (model_overrides or {}).get(backend.value) or settings.opencode_backend_models.get(
+        backend.value
+    )
 
 
 def _render_message(work_package: ExecutorWorkPackage, backend: BackendName) -> str:

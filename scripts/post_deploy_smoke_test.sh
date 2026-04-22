@@ -6,6 +6,7 @@ AGENT_BASE_URL="${AGENT_BASE_URL:-https://agents.woodhost.cloud/api}"
 WORKER_TARGET_ID="${WORKER_TARGET_ID:-}"
 KEEP_TASK_OUTPUTS="${KEEP_TASK_OUTPUTS:-false}"
 STREAM_TIMEOUT_SECONDS="${STREAM_TIMEOUT_SECONDS:-180}"
+RUN_MARKER="${RUN_MARKER:-post-deploy-$(date +%s)-$$}"
 
 if ! command -v curl >/dev/null 2>&1; then
   echo "curl is required but not installed." >&2
@@ -15,6 +16,22 @@ fi
 if ! command -v jq >/dev/null 2>&1; then
   echo "jq is required but not installed." >&2
   exit 1
+fi
+
+PYTHON_BIN="${PYTHON_BIN:-}"
+if [[ -z "${PYTHON_BIN}" ]]; then
+  SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+  REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+  if [[ -x "${REPO_ROOT}/backend/.venv/bin/python" ]]; then
+    PYTHON_BIN="${REPO_ROOT}/backend/.venv/bin/python"
+  elif command -v python3 >/dev/null 2>&1; then
+    PYTHON_BIN="python3"
+  elif command -v python >/dev/null 2>&1; then
+    PYTHON_BIN="python"
+  else
+    echo "python or python3 is required but not installed." >&2
+    exit 1
+  fi
 fi
 
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agent-service-post-deploy.XXXXXX")"
@@ -218,7 +235,7 @@ run_worker_backed_smoke() {
   submit_chat_task \
     "rag-analyst-worker" \
     "rag-analyst" \
-    "Analyze this post-deploy smoke test in two bullets. Do not edit files."
+    "Analyze this post-deploy smoke test in two bullets. Do not edit files. E2E run marker: ${RUN_MARKER}-rag."
 
   local task_id
   task_id="$(jq -r '.task.id' "${WORK_DIR}/rag-analyst-worker.json")"
@@ -231,12 +248,22 @@ run_planner_smoke() {
   submit_chat_task \
     "planner-inline" \
     "planner" \
-    "Give me three concise post-deploy validation checks."
+    "Give me three concise post-deploy validation checks. E2E run marker: ${RUN_MARKER}-planner."
 
   local task_id
   task_id="$(jq -r '.task.id' "${WORK_DIR}/planner-inline.json")"
   stream_task "planner-inline" "${task_id}"
   assert_task_completed "planner-inline" "${task_id}"
+}
+
+run_openwebui_pipe_smoke() {
+  log INFO "Running Open WebUI pipe E2E smoke test."
+  AGENT_BASE_URL="${AGENT_BASE_URL%/api}" \
+    WORKER_TARGET_ID="$(cat "${WORK_DIR}/selected-worker-target")" \
+    PIPE_E2E_RUN_MARKER="${RUN_MARKER}-pipe" \
+    STREAM_TIMEOUT_SECONDS="${STREAM_TIMEOUT_SECONDS}" \
+    "${PYTHON_BIN}" "$(dirname "$0")/openwebui_pipe_e2e_test.py"
+  pass "Open WebUI pipe E2E smoke test passed."
 }
 
 main() {
@@ -246,6 +273,7 @@ main() {
   check_models
   run_worker_backed_smoke
   run_planner_smoke
+  run_openwebui_pipe_smoke
 
   log INFO "Post-deploy smoke test complete."
   printf 'Passes: %s\nFailures: %s\n' "${PASS_COUNT}" "${FAIL_COUNT}"

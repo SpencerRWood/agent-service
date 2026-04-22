@@ -449,6 +449,48 @@ def test_create_task_reuses_recent_duplicate_by_idempotency_key():
     assert run_service.create_run_calls == 0
 
 
+def test_content_window_idempotency_does_not_reuse_stale_run_by_key():
+    run_service = FakeRunService()
+    run_service.runs["stale-task"] = _build_run_read(
+        "stale-task",
+        status=TaskState.DEFERRED_UNTIL_RESET.value,
+        idempotency_key="stale-key-123",
+    )
+    execution_target_service = FakeExecutionTargetService()
+    approval_service = FakeApprovalService()
+    approval_service.approvals_by_run = {"task-1": []}
+    approval_service.decisions_by_run = {"task-1": []}
+    service = AgentTaskService(
+        run_service=run_service,
+        event_service=FakeEventService(),
+        approval_service=approval_service,
+        artifact_service=FakeArtifactService(),
+        execution_target_service=execution_target_service,
+    )
+
+    response = asyncio.run(
+        service.create_task(
+            AgentTaskCreateRequest(
+                task_class=TaskClass.PLAN_ONLY,
+                public_agent_id="planner",
+                runtime_key="planner_runtime",
+                prompt="Give me a test plan for creating an agent.",
+                metadata={
+                    "idempotency_scope": "content_window",
+                    "idempotency_key": "stale-key-123",
+                    "idempotency_window_seconds": 45,
+                },
+            )
+        )
+    )
+
+    assert response.task.task_id == "task-1"
+    assert response.task.task_id != "stale-task"
+    assert response.task.state == TaskState.QUEUED
+    assert response.task.job is not None
+    assert len(execution_target_service.created_jobs) == 1
+
+
 def test_create_plan_task_dispatches_to_worker_instead_of_running_inline():
     run_service = FakeRunService()
     approval_service = FakeApprovalService()

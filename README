@@ -105,6 +105,14 @@ AGENT_BASE_URL=https://agents.woodhost.cloud/api scripts/post_deploy_smoke_test.
 
 The post-deploy smoke test first looks for an enabled execution target that supports `agent.run_task`. If no worker target exists, it exits successfully with a skipped result and does not submit prompts. If a worker exists, it verifies health, model discovery, worker-backed execution, and planner execution.
 
+To isolate the Open WebUI pipe path for the planner regression, run:
+
+```sh
+AGENT_BASE_URL=https://agents.woodhost.cloud backend/.venv/bin/python scripts/openwebui_pipe_e2e_test.py
+```
+
+That test instantiates the same `scripts/openwebui_pipe.py` pipe used by Open WebUI, submits `agent_services.planner`, streams the resulting task, and fails if the task returns `deferred_until_reset` or does not emit a worker-claimed event.
+
 ## Architecture
 
 The current execution path is:

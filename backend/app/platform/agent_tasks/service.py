@@ -100,7 +100,10 @@ class AgentTaskService:
         run, created_new = await self._run_service.create_or_get_run(
             RunCreate(
                 status=TaskState.QUEUED.value,
-                idempotency_key=idempotency_key,
+                idempotency_key=_persistent_run_idempotency_key(
+                    request.metadata,
+                    idempotency_key,
+                ),
             )
         )
         if idempotency_key and not created_new:
@@ -664,13 +667,14 @@ class AgentTaskService:
         if not idempotency_key:
             return None
 
-        existing_run = await self._run_service.get_run_by_idempotency_key(idempotency_key)
-        if existing_run is not None:
-            return await self._wait_for_existing_task_read(
-                run_id=existing_run.id,
-                request=request,
-                task_class=task_class,
-            )
+        if _uses_persistent_run_idempotency(request.metadata):
+            existing_run = await self._run_service.get_run_by_idempotency_key(idempotency_key)
+            if existing_run is not None:
+                return await self._wait_for_existing_task_read(
+                    run_id=existing_run.id,
+                    request=request,
+                    task_class=task_class,
+                )
 
         metadata = request.metadata or {}
         window_seconds = _coerce_idempotency_window_seconds(
@@ -851,6 +855,27 @@ def _extract_idempotency_key(metadata: dict | None) -> str | None:
         return None
     normalized = str(metadata.get("idempotency_key") or "").strip()
     return normalized or None
+
+
+def _idempotency_scope(metadata: dict | None) -> str:
+    if not metadata:
+        return ""
+    return str(metadata.get("idempotency_scope") or "").strip()
+
+
+def _uses_persistent_run_idempotency(metadata: dict | None) -> bool:
+    return _idempotency_scope(metadata) == "workflow_handoff"
+
+
+def _persistent_run_idempotency_key(
+    metadata: dict | None,
+    idempotency_key: str | None,
+) -> str | None:
+    if not idempotency_key:
+        return None
+    if not _uses_persistent_run_idempotency(metadata):
+        return None
+    return idempotency_key
 
 
 def _coerce_handoff_iterations(value, *, default: int = 1) -> int:

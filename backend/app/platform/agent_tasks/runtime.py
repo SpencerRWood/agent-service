@@ -449,6 +449,7 @@ class OpenCodeExecutor:
                 "command": self._command,
                 "task_class": envelope.task_class.value,
                 "backend": selection.backend.value,
+                "model": _selected_model_name(envelope, selection.backend),
                 "reason_codes": [reason.value for reason in selection.reason_codes],
                 "rerouted_from": selection.rerouted_from.value
                 if selection.rerouted_from is not None
@@ -459,11 +460,19 @@ class OpenCodeExecutor:
                     artifact_type=artifact_type,
                     title="Task Result",
                     content=content,
-                    provenance={"backend": selection.backend.value, "executor": "opencode"},
+                    provenance={
+                        "backend": selection.backend.value,
+                        "executor": "opencode",
+                        "model": _selected_model_name(envelope, selection.backend),
+                    },
                     status="completed",
                 )
             ],
-            metrics={"mode": "dry_run", "executor": "opencode"},
+            metrics={
+                "mode": "dry_run",
+                "executor": "opencode",
+                "model": _selected_model_name(envelope, selection.backend),
+            },
             completed_at=datetime.now(UTC),
         )
 
@@ -711,6 +720,10 @@ def _availability_reason_code(backend: BackendName, *, available: bool) -> Reaso
     if backend == BackendName.COPILOT_CLI:
         return ReasonCode.COPILOT_AVAILABLE
     return ReasonCode.LOCAL_LLM_SUFFICIENT
+
+
+def _selected_model_name(envelope: AgentTaskEnvelope, backend: BackendName) -> str | None:
+    return envelope.backend_models.get(backend.value)
 
 
 def _coerce_datetime(value: object) -> datetime | None:
