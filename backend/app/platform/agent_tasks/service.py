@@ -18,8 +18,6 @@ from app.platform.agent_tasks.enrichment import (
 )
 from app.platform.agent_tasks.links import build_task_action_url
 from app.platform.agent_tasks.runtime import (
-    OpenCodeProgressReporter,
-    OpenCodeRuntime,
     available_route_profiles,
     classify_task,
     default_allowed_backends_for_task,
@@ -53,7 +51,6 @@ from app.platform.approvals.repository import ApprovalRepository
 from app.platform.approvals.schemas import (
     ApprovalDecisionCreate,
     ApprovalRequestCreate,
-    ApprovalRequestRead,
 )
 from app.platform.approvals.service import ApprovalService
 from app.platform.artifacts.repository import ArtifactRepository
@@ -215,54 +212,6 @@ class AgentTaskService:
                     "runtime_key": envelope.runtime_key,
                 },
             )
-        elif (
-            envelope.execution_mode.value == "opencode"
-            and envelope.task_class == TaskClass.PLAN_ONLY
-        ):
-            reporter = OpenCodeProgressReporter(
-                task_id=envelope.task_id,
-                run_id=envelope.run_id,
-                step_id=envelope.step_id,
-                correlation_id=envelope.correlation_id,
-                base_url=settings.agent_services_base_url
-                or f"http://{settings.app_host}:{settings.app_port}",
-            )
-            runtime = OpenCodeRuntime.from_settings()
-            result = await runtime.execute(envelope, reporter)
-            if result.state == TaskState.PENDING_APPROVAL:
-                await self._run_service.update_step_status(
-                    envelope.step_id,
-                    status_value=TaskState.PENDING_APPROVAL.value,
-                    output={"result": result.model_dump(mode="json")},
-                )
-                await self._enter_pending_approval(
-                    task_id=envelope.task_id,
-                    step_id=envelope.step_id,
-                    envelope=envelope,
-                    message=result.summary,
-                    policy_key="agent_task_backend_fallback",
-                    requested_decision={
-                        "task_id": envelope.task_id,
-                        "public_agent_id": envelope.public_agent_id,
-                        "runtime_key": envelope.runtime_key,
-                        "suggested_backend": result.raw_output.get("suggested_backend"),
-                        "available_backends": result.raw_output.get("available_backends", []),
-                    },
-                )
-            else:
-                await self._run_service.update_run_status(envelope.task_id, result.state.value)
-                await self._run_service.update_step_status(
-                    envelope.step_id,
-                    status_value=result.state.value,
-                    output={"result": result.model_dump(mode="json")},
-                )
-            return AgentTaskCreateResponse(
-                task=await self._build_task_read(
-                    envelope.task_id,
-                    envelope=envelope,
-                    job=None,
-                )
-            )
         else:
             job = await self._dispatch_task(envelope)
         if request.wait_for_completion and job is not None:
@@ -366,9 +315,7 @@ class AgentTaskService:
                 trace_id=task.envelope.correlation_id,
             )
         )
-        if task.job is None and approval.policy_key == "agent_task_backend_fallback":
-            task = await self._resume_inline_backend_fallback(task, approval)
-        elif task.job is None:
+        if task.job is None:
             await self._dispatch_task(task.envelope)
         return await self._build_task_read(task_id)
 
@@ -464,46 +411,6 @@ class AgentTaskService:
                 trace_id=envelope.correlation_id,
             )
         )
-
-    async def _resume_inline_backend_fallback(
-        self,
-        task: AgentTaskRead,
-        approval: ApprovalRequestRead,
-    ) -> AgentTaskRead:
-        suggested_backend = str(
-            approval.request_payload_json.get("suggested_backend") or ""
-        ).strip()
-        if not suggested_backend:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="No suggested backend was recorded for this fallback approval.",
-            )
-
-        resumed_envelope = task.envelope.model_copy(
-            update={"preferred_backend": BackendName(suggested_backend)}
-        )
-        await self._run_service.update_step_status(
-            task.step.id,
-            status_value=TaskState.QUEUED.value,
-            output={"task_envelope": resumed_envelope.model_dump(mode="json")},
-        )
-        reporter = OpenCodeProgressReporter(
-            task_id=resumed_envelope.task_id,
-            run_id=resumed_envelope.run_id,
-            step_id=resumed_envelope.step_id,
-            correlation_id=resumed_envelope.correlation_id,
-            base_url=settings.agent_services_base_url
-            or f"http://{settings.app_host}:{settings.app_port}",
-        )
-        runtime = OpenCodeRuntime.from_settings()
-        result = await runtime.execute(resumed_envelope, reporter)
-        await self._run_service.update_run_status(task.run.id, result.state.value)
-        await self._run_service.update_step_status(
-            task.step.id,
-            status_value=result.state.value,
-            output={"result": result.model_dump(mode="json")},
-        )
-        return await self._build_task_read(task.task_id, envelope=resumed_envelope, job=None)
 
     async def publish_progress(self, task_id: str, request: AgentTaskProgressCreate) -> None:
         if request.state is not None:

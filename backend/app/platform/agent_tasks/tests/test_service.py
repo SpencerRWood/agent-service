@@ -3,13 +3,10 @@ from datetime import UTC, datetime
 
 from fastapi import HTTPException, status
 
-import app.platform.agent_tasks.service as agent_task_service_module
 from app.platform.agent_tasks.schemas import (
     AgentTaskCreateRequest,
     AgentTaskEnvelope,
-    AgentTaskResult,
     BackendName,
-    ExecutionMode,
     TaskClass,
     TaskState,
     WorkerDispatchDecision,
@@ -241,6 +238,7 @@ class FakeApprovalService:
 class FakeExecutionTargetService:
     def __init__(self) -> None:
         self.jobs_by_id: dict[str, ExecutionJobRead] = {}
+        self.created_jobs: list[ExecutionJobRead] = []
 
     async def choose_target(self, **kwargs):
         del kwargs
@@ -264,7 +262,7 @@ class FakeExecutionTargetService:
         )
 
     async def create_job(self, **kwargs):
-        return ExecutionJobRead(
+        job = ExecutionJobRead(
             id=kwargs["job_id"],
             target_id=kwargs["target_id"],
             tool_name=kwargs["tool_name"],
@@ -277,6 +275,9 @@ class FakeExecutionTargetService:
             claimed_at=None,
             completed_at=None,
         )
+        self.jobs_by_id[job.id] = job
+        self.created_jobs.append(job)
+        return job
 
     async def wait_for_job(self, job_id):
         raise AssertionError(f"wait_for_job should not be called for {job_id}")
@@ -448,39 +449,19 @@ def test_create_task_reuses_recent_duplicate_by_idempotency_key():
     assert run_service.create_run_calls == 0
 
 
-def test_create_inline_plan_task_preserves_deferred_state(monkeypatch):
-    class DeferredRuntime:
-        async def execute(self, envelope, reporter):
-            del envelope, reporter
-            return AgentTaskResult(
-                state=TaskState.DEFERRED_UNTIL_RESET,
-                backend=BackendName.LOCAL_LLM,
-                execution_mode=ExecutionMode.OPENCODE,
-                summary="No backend is currently available. Task deferred until reset.",
-                reason_code="backend_unavailable",
-                raw_output={},
-                artifacts=[],
-                metrics={"executor": "opencode"},
-                completed_at=datetime.now(UTC),
-            )
-
-    monkeypatch.setattr(
-        agent_task_service_module.OpenCodeRuntime,
-        "from_settings",
-        classmethod(lambda cls: DeferredRuntime()),
-    )
-
+def test_create_plan_task_dispatches_to_worker_instead_of_running_inline():
     run_service = FakeRunService()
     approval_service = FakeApprovalService()
     approval_service.approvals_by_run = {"task-1": []}
     approval_service.decisions_by_run = {"task-1": []}
+    execution_target_service = FakeExecutionTargetService()
 
     service = AgentTaskService(
         run_service=run_service,
         event_service=FakeEventService(),
         approval_service=approval_service,
         artifact_service=FakeArtifactService(),
-        execution_target_service=FakeExecutionTargetService(),
+        execution_target_service=execution_target_service,
     )
 
     response = asyncio.run(
@@ -494,55 +475,31 @@ def test_create_inline_plan_task_preserves_deferred_state(monkeypatch):
         )
     )
 
-    assert response.task.state == TaskState.DEFERRED_UNTIL_RESET
-    assert response.task.result is not None
-    assert (
-        response.task.result.summary
-        == "No backend is currently available. Task deferred until reset."
-    )
-    assert response.task.result.completed_at is not None
-    assert run_service.runs["task-1"].status == TaskState.DEFERRED_UNTIL_RESET.value
-    assert (
-        run_service.steps_by_run["task-1"][0].output_json["result"]["state"]
-        == TaskState.DEFERRED_UNTIL_RESET.value
-    )
+    assert response.task.state == TaskState.QUEUED
+    assert response.task.job is not None
+    assert response.task.job.tool_name == "agent.run_task"
+    assert response.task.job.target_id == "worker-b"
+    assert response.task.envelope.task_class == TaskClass.PLAN_ONLY
+    assert response.task.envelope.dispatch.target_id == "worker-b"
+    assert response.task.envelope.preferred_backend == BackendName.LOCAL_LLM
+    assert response.task.result is None
+    assert run_service.runs["task-1"].status == TaskState.QUEUED.value
+    assert len(execution_target_service.created_jobs) == 1
 
 
-def test_create_inline_plan_task_requests_approval_for_backend_fallback(monkeypatch):
-    class FallbackRuntime:
-        async def execute(self, envelope, reporter):
-            del envelope, reporter
-            return AgentTaskResult(
-                state=TaskState.PENDING_APPROVAL,
-                backend=BackendName.CODEX,
-                execution_mode=ExecutionMode.OPENCODE,
-                summary="Local planner backend is unavailable. codex is available. Approve to continue with codex.",
-                reason_code="backend_unavailable",
-                raw_output={
-                    "suggested_backend": "codex",
-                    "available_backends": ["codex"],
-                },
-                artifacts=[],
-                metrics={"executor": "opencode"},
-            )
-
-    monkeypatch.setattr(
-        agent_task_service_module.OpenCodeRuntime,
-        "from_settings",
-        classmethod(lambda cls: FallbackRuntime()),
-    )
-
+def test_approved_task_without_existing_job_dispatches_to_worker():
     run_service = FakeRunService()
     approval_service = FakeApprovalService()
     approval_service.approvals_by_run = {"task-1": []}
     approval_service.decisions_by_run = {"task-1": []}
+    execution_target_service = FakeExecutionTargetService()
 
     service = AgentTaskService(
         run_service=run_service,
         event_service=FakeEventService(),
         approval_service=approval_service,
         artifact_service=FakeArtifactService(),
-        execution_target_service=FakeExecutionTargetService(),
+        execution_target_service=execution_target_service,
     )
 
     response = asyncio.run(
@@ -552,91 +509,22 @@ def test_create_inline_plan_task_requests_approval_for_backend_fallback(monkeypa
                 public_agent_id="planner",
                 runtime_key="planner_runtime",
                 prompt="Give me a test plan",
+                approval_policy={"mode": "required"},
             )
         )
     )
 
     assert response.task.state == TaskState.PENDING_APPROVAL
-    assert response.task.result is not None
-    assert response.task.result.summary == (
-        "Local planner backend is unavailable. codex is available. Approve to continue with codex."
-    )
-    assert response.task.approvals[0].policy_key == "agent_task_backend_fallback"
-    assert response.task.approvals[0].request_payload_json["suggested_backend"] == "codex"
     assert run_service.runs["task-1"].status == TaskState.PENDING_APPROVAL.value
 
+    approved = asyncio.run(service.approve_task("task-1", decided_by="manual-test"))
 
-def test_approve_task_resumes_inline_backend_fallback(monkeypatch):
-    results = [
-        AgentTaskResult(
-            state=TaskState.PENDING_APPROVAL,
-            backend=BackendName.CODEX,
-            execution_mode=ExecutionMode.OPENCODE,
-            summary="Local planner backend is unavailable. codex is available. Approve to continue with codex.",
-            reason_code="backend_unavailable",
-            raw_output={
-                "suggested_backend": "codex",
-                "available_backends": ["codex"],
-            },
-            artifacts=[],
-            metrics={"executor": "opencode"},
-        ),
-        AgentTaskResult(
-            state=TaskState.COMPLETED,
-            backend=BackendName.CODEX,
-            execution_mode=ExecutionMode.OPENCODE,
-            summary="Completed with codex after approval.",
-            raw_output={"backend": "codex"},
-            artifacts=[],
-            metrics={"executor": "opencode"},
-            completed_at=datetime.now(UTC),
-        ),
-    ]
-    executed_backends: list[BackendName] = []
-
-    class SequencedRuntime:
-        async def execute(self, envelope, reporter):
-            del reporter
-            executed_backends.append(envelope.preferred_backend)
-            return results.pop(0)
-
-    monkeypatch.setattr(
-        agent_task_service_module.OpenCodeRuntime,
-        "from_settings",
-        classmethod(lambda cls: SequencedRuntime()),
-    )
-
-    run_service = FakeRunService()
-    approval_service = FakeApprovalService()
-    approval_service.approvals_by_run = {"task-1": []}
-    approval_service.decisions_by_run = {"task-1": []}
-    service = AgentTaskService(
-        run_service=run_service,
-        event_service=FakeEventService(),
-        approval_service=approval_service,
-        artifact_service=FakeArtifactService(),
-        execution_target_service=FakeExecutionTargetService(),
-    )
-
-    created = asyncio.run(
-        service.create_task(
-            AgentTaskCreateRequest(
-                task_class=TaskClass.PLAN_ONLY,
-                public_agent_id="planner",
-                runtime_key="planner_runtime",
-                prompt="Give me a test plan",
-            )
-        )
-    )
-    assert created.task.state == TaskState.PENDING_APPROVAL
-
-    resumed = asyncio.run(service.approve_task("task-1", decided_by="manual-test"))
-
-    assert executed_backends == [BackendName.LOCAL_LLM, BackendName.CODEX]
-    assert resumed.state == TaskState.COMPLETED
-    assert resumed.result is not None
-    assert resumed.result.summary == "Completed with codex after approval."
-    assert run_service.runs["task-1"].status == TaskState.COMPLETED.value
+    assert approved.state == TaskState.QUEUED
+    assert approved.job is not None
+    assert approved.job.tool_name == "agent.run_task"
+    assert approved.job.target_id == "worker-b"
+    assert run_service.runs["task-1"].status == TaskState.QUEUED.value
+    assert len(execution_target_service.created_jobs) == 1
 
 
 def test_list_public_tasks_hides_enrichment_runs_and_merges_metadata():
