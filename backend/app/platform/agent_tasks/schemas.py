@@ -102,6 +102,7 @@ class AgentTaskEnvelope(BaseModel):
     execution_mode: ExecutionMode = ExecutionMode.OPENCODE
     allowed_backends: list[BackendName] = Field(default_factory=list)
     preferred_backend: BackendName | None = None
+    backend_models: dict[str, str] = Field(default_factory=dict)
     approval_policy: dict[str, Any] = Field(default_factory=dict)
     timeout_policy: dict[str, Any] = Field(default_factory=dict)
     return_artifacts: list[str] = Field(default_factory=list)

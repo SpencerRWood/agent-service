@@ -64,6 +64,12 @@ export type AgentCatalogConfig = {
   effective_catalog: AgentCatalogDefinition
 }
 
+export type BackendModelsConfig = {
+  default_models: Record<string, string>
+  override_models: Record<string, string> | null
+  effective_models: Record<string, string>
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(resolveApiUrl(path), {
     headers: {
@@ -92,6 +98,23 @@ export async function saveAgentCatalog(catalog: AgentCatalogDefinition): Promise
 
 export async function resetAgentCatalogOverride(): Promise<AgentCatalogConfig> {
   return request("/platform/agents/config/override", {
+    method: "DELETE",
+  })
+}
+
+export async function getBackendModelsConfig(): Promise<BackendModelsConfig> {
+  return request("/platform/agents/backend-models")
+}
+
+export async function saveBackendModels(models: Record<string, string>): Promise<BackendModelsConfig> {
+  return request("/platform/agents/backend-models", {
+    method: "PUT",
+    body: JSON.stringify({ models }),
+  })
+}
+
+export async function resetBackendModels(): Promise<BackendModelsConfig> {
+  return request("/platform/agents/backend-models", {
     method: "DELETE",
   })
 }

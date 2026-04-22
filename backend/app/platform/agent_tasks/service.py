@@ -16,6 +16,7 @@ from app.platform.agent_tasks.enrichment import (
     extract_enrichment_payload,
     extract_parent_task_id,
 )
+from app.platform.agent_tasks.links import build_task_action_url
 from app.platform.agent_tasks.runtime import (
     OpenCodeProgressReporter,
     OpenCodeRuntime,
@@ -40,6 +41,7 @@ from app.platform.agent_tasks.schemas import (
     WorkerDispatchDecision,
     WorkflowOutcome,
 )
+from app.platform.agents.config_service import AgentCatalogConfigService
 from app.platform.agents.schemas import (
     AgentDefinition,
     AgentWorkflowActionDefinition,
@@ -75,6 +77,7 @@ class AgentTaskService:
         approval_service: ApprovalService,
         artifact_service: ArtifactService,
         execution_target_service: ExecutionTargetService,
+        agent_config_service: AgentCatalogConfigService | None = None,
         agent_registry: AgentRegistry | None = None,
         runtime_registry: RuntimeRegistry | None = None,
     ) -> None:
@@ -83,6 +86,7 @@ class AgentTaskService:
         self._approval_service = approval_service
         self._artifact_service = artifact_service
         self._execution_target_service = execution_target_service
+        self._agent_config_service = agent_config_service
         self._runtime_registry = runtime_registry or get_runtime_registry()
         self._agent_registry = agent_registry or AgentRegistry(self._runtime_registry)
 
@@ -139,6 +143,7 @@ class AgentTaskService:
         )
         if preferred_backend not in allowed_backends:
             preferred_backend = allowed_backends[0]
+        backend_models = await self._get_backend_models()
 
         envelope = AgentTaskEnvelope(
             task_id=run.id,
@@ -157,6 +162,7 @@ class AgentTaskService:
             execution_mode=request.execution_mode,
             allowed_backends=allowed_backends,
             preferred_backend=preferred_backend,
+            backend_models=backend_models,
             approval_policy=request.approval_policy or {"mode": "none"},
             timeout_policy=request.timeout_policy or {"seconds": 900},
             return_artifacts=request.return_artifacts,
@@ -184,6 +190,7 @@ class AgentTaskService:
                     "normalized_goal": envelope.normalized_goal,
                     "preferred_backend": preferred_backend.value,
                     "allowed_backends": [backend.value for backend in allowed_backends],
+                    "backend_models": backend_models,
                     "execution_mode": envelope.execution_mode.value,
                     "dispatch_target": dispatch.target_id,
                     "dispatch_reason": dispatch.reason,
@@ -669,6 +676,12 @@ class AgentTaskService:
             },
         )
 
+    async def _get_backend_models(self) -> dict[str, str]:
+        if self._agent_config_service is None:
+            return dict(settings.opencode_backend_models)
+        config = await self._agent_config_service.get_backend_models_config()
+        return dict(config.effective_models)
+
     async def _build_task_read(
         self,
         task_id: str,
@@ -895,6 +908,7 @@ def build_agent_task_service(
     approval_repository: ApprovalRepository,
     artifact_repository: ArtifactRepository,
     execution_target_service: ExecutionTargetService,
+    agent_config_service: AgentCatalogConfigService | None = None,
     agent_registry: AgentRegistry | None = None,
     runtime_registry: RuntimeRegistry | None = None,
 ) -> AgentTaskService:
@@ -904,6 +918,7 @@ def build_agent_task_service(
         approval_service=ApprovalService(approval_repository),
         artifact_service=ArtifactService(artifact_repository),
         execution_target_service=execution_target_service,
+        agent_config_service=agent_config_service,
         agent_registry=agent_registry,
         runtime_registry=runtime_registry,
     )
@@ -1145,7 +1160,7 @@ def _to_public_task_summary(task: AgentTaskRead) -> PublicAgentTaskSummaryRead:
         conversation_title=None,
         conversation_tags=[],
         follow_ups=[],
-        stream_url=f"/api/agent-tasks/{task.task_id}/stream",
+        stream_url=build_task_action_url(task.task_id, "stream"),
     )
 
 

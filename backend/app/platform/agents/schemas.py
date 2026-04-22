@@ -4,7 +4,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from app.platform.agent_tasks.schemas import TaskClass
+from app.platform.agent_tasks.schemas import BackendName, TaskClass
 
 
 class AgentWorkflowActionDefinition(BaseModel):
@@ -77,3 +77,13 @@ class AgentCatalogOverrideUpdate(BaseModel):
 
 class AgentCatalogStructuredUpdate(BaseModel):
     catalog: AgentCatalogDefinition
+
+
+class BackendModelsConfigRead(BaseModel):
+    default_models: dict[str, str] = Field(default_factory=dict)
+    override_models: dict[str, str] | None = None
+    effective_models: dict[str, str] = Field(default_factory=dict)
+
+
+class BackendModelsUpdate(BaseModel):
+    models: dict[BackendName, str] = Field(default_factory=dict)

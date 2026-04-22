@@ -71,6 +71,9 @@ instance/
 # Sphinx documentation
 docs/_build/
 
+# Generated planning artifacts
+docs/project_requirements.tex
+
 # PyBuilder
 .pybuilder/
 target/

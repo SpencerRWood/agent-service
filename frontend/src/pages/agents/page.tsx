@@ -1,8 +1,11 @@
 import { useEffect, useState } from "react"
 
 import {
+  getBackendModelsConfig,
   getAgentCatalogConfig,
+  resetBackendModels,
   resetAgentCatalogOverride,
+  saveBackendModels,
   saveAgentCatalog,
   type AgentCatalogConfig,
   type AgentCatalogDefinition,
@@ -10,8 +13,11 @@ import {
   type AgentWorkflowActionDefinition,
   type AgentWorkflowDefinition,
   type AgentWorkflowStepDefinition,
+  type BackendModelsConfig,
   type RuntimeDefinition,
 } from "@/features/agents/api"
+
+const BACKEND_MODEL_KEYS = ["local_llm", "codex", "copilot_cli"]
 
 const TASK_CLASS_OPTIONS = [
   "classify_only",
@@ -221,23 +227,38 @@ function ActionEditor({
 export default function AgentsPage() {
   const [config, setConfig] = useState<AgentCatalogConfig | null>(null)
   const [catalog, setCatalog] = useState<AgentCatalogDefinition | null>(null)
+  const [backendModelsConfig, setBackendModelsConfig] = useState<BackendModelsConfig | null>(null)
+  const [backendModels, setBackendModels] = useState<Record<string, string>>({})
   const [status, setStatus] = useState("Loading agent catalog...")
+  const [backendModelStatus, setBackendModelStatus] = useState("Loading backend model mappings...")
   const [isSaving, setIsSaving] = useState(false)
+  const [isSavingBackendModels, setIsSavingBackendModels] = useState(false)
 
   useEffect(() => {
     async function refresh() {
       try {
-        const nextConfig = await getAgentCatalogConfig()
+        const [nextConfig, nextBackendModelsConfig] = await Promise.all([
+          getAgentCatalogConfig(),
+          getBackendModelsConfig(),
+        ])
         setConfig(nextConfig)
         setCatalog(cloneCatalog(nextConfig.effective_catalog))
+        setBackendModelsConfig(nextBackendModelsConfig)
+        setBackendModels({ ...nextBackendModelsConfig.effective_models })
         setStatus(
           nextConfig.has_override
             ? "Loaded the database-backed agent catalog override."
             : "Loaded default catalog values from the repository."
         )
+        setBackendModelStatus(
+          nextBackendModelsConfig.override_models
+            ? "Loaded database-backed backend model mappings."
+            : "Loaded backend model mappings from environment defaults."
+        )
       } catch (error) {
         console.error("Failed to load agent catalog config", error)
         setStatus(error instanceof Error ? error.message : "Failed to load agent catalog config.")
+        setBackendModelStatus(error instanceof Error ? error.message : "Failed to load backend model mappings.")
       }
     }
 
@@ -332,6 +353,41 @@ export default function AgentsPage() {
     }
   }
 
+  async function handleSaveBackendModels() {
+    setIsSavingBackendModels(true)
+    try {
+      const normalized = Object.fromEntries(
+        Object.entries(backendModels)
+          .map(([backend, model]) => [backend.trim(), model.trim()])
+          .filter(([backend, model]) => backend && model)
+      )
+      const nextConfig = await saveBackendModels(normalized)
+      setBackendModelsConfig(nextConfig)
+      setBackendModels({ ...nextConfig.effective_models })
+      setBackendModelStatus("Saved backend model mappings to the backend database.")
+    } catch (error) {
+      console.error("Failed to save backend model mappings", error)
+      setBackendModelStatus(error instanceof Error ? error.message : "Failed to save backend model mappings.")
+    } finally {
+      setIsSavingBackendModels(false)
+    }
+  }
+
+  async function handleResetBackendModels() {
+    setIsSavingBackendModels(true)
+    try {
+      const nextConfig = await resetBackendModels()
+      setBackendModelsConfig(nextConfig)
+      setBackendModels({ ...nextConfig.effective_models })
+      setBackendModelStatus("Reset backend model mappings to environment defaults.")
+    } catch (error) {
+      console.error("Failed to reset backend model mappings", error)
+      setBackendModelStatus(error instanceof Error ? error.message : "Failed to reset backend model mappings.")
+    } finally {
+      setIsSavingBackendModels(false)
+    }
+  }
+
   function addAgent() {
     setCatalog((current) => {
       if (!current) {
@@ -408,6 +464,55 @@ export default function AgentsPage() {
           </button>
           <button type="button" disabled={!catalog} onClick={addRuntime}>
             + Add Runtime
+          </button>
+        </div>
+      </section>
+
+      <section className="panel">
+        <div className="config-page__header">
+          <div>
+            <h2>Backend Models</h2>
+            <p className="status">{backendModelStatus}</p>
+          </div>
+          {backendModelsConfig ? (
+            <dl className="meta meta--three-up">
+              <div>
+                <dt>Default Source</dt>
+                <dd>{Object.keys(backendModelsConfig.default_models).length ? ".env" : "None configured"}</dd>
+              </div>
+              <div>
+                <dt>Saved Override</dt>
+                <dd>{backendModelsConfig.override_models ? "Database record active" : "Using defaults only"}</dd>
+              </div>
+              <div>
+                <dt>Mapped Backends</dt>
+                <dd>{Object.keys(backendModelsConfig.effective_models).length}</dd>
+              </div>
+            </dl>
+          ) : null}
+        </div>
+
+        <div className="agent-config__grid agent-config__grid--three">
+          {BACKEND_MODEL_KEYS.map((backend) => (
+            <label key={backend}>
+              {backend}
+              <input
+                value={backendModels[backend] ?? ""}
+                onChange={(event) =>
+                  setBackendModels((current) => ({ ...current, [backend]: event.target.value }))
+                }
+                placeholder="provider/model"
+              />
+            </label>
+          ))}
+        </div>
+
+        <div className="actions">
+          <button type="button" disabled={isSavingBackendModels} onClick={handleSaveBackendModels}>
+            {isSavingBackendModels ? "Saving..." : "Save Backend Models"}
+          </button>
+          <button type="button" disabled={isSavingBackendModels} onClick={handleResetBackendModels}>
+            Reset Backend Models
           </button>
         </div>
       </section>

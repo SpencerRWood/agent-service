@@ -35,9 +35,31 @@ class AgentCatalogConfigRepository:
         await self._session.refresh(record)
         return record
 
+    async def update_backend_models(
+        self,
+        *,
+        backend_models: dict[str, str] | None,
+    ) -> AgentCatalogConfigRecord:
+        record = await self.get_default()
+        if record is None:
+            record = AgentCatalogConfigRecord(
+                config_key=DEFAULT_AGENT_CATALOG_CONFIG_KEY,
+                backend_models_json=backend_models,
+            )
+            self._session.add(record)
+        else:
+            record.backend_models_json = backend_models
+        await self._session.commit()
+        await self._session.refresh(record)
+        return record
+
     async def clear_default(self) -> None:
         record = await self.get_default()
         if record is None:
             return
-        await self._session.delete(record)
+        if record.backend_models_json is not None:
+            record.override_yaml = None
+            record.override_json = None
+        else:
+            await self._session.delete(record)
         await self._session.commit()

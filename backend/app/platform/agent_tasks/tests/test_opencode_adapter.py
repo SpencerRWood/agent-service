@@ -84,6 +84,31 @@ def test_execute_parses_json_events_into_summary_and_artifact():
     assert stdin is None
 
 
+def test_execute_uses_envelope_model_override():
+    runner = FakeRunner(
+        [
+            CommandExecutionResult(
+                exit_code=0,
+                stdout='{"type":"text","part":{"type":"text","text":"ok"}}\n',
+                stderr="",
+            )
+        ]
+    )
+    adapter = OpenCodeCLIAdapter(command="/bin/echo", runner=runner)
+
+    asyncio.run(
+        adapter.execute(
+            work_package=build_work_package(),
+            backend=BackendName.CODEX,
+            model_overrides={"codex": "openrouter/openai/gpt-oss-120b:free"},
+        )
+    )
+
+    argv, _ = runner.calls[0]
+    assert "--model" in argv
+    assert "openrouter/openai/gpt-oss-120b:free" in argv
+
+
 def test_execute_prefers_explicit_text_parts_over_session_ids():
     runner = FakeRunner(
         [

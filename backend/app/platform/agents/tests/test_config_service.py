@@ -8,10 +8,15 @@ from app.platform.agents.schemas import AgentCatalogDefinition
 
 class FakeConfigRecord:
     def __init__(
-        self, *, override_yaml: str | None = None, override_json: dict | None = None
+        self,
+        *,
+        override_yaml: str | None = None,
+        override_json: dict | None = None,
+        backend_models_json: dict | None = None,
     ) -> None:
         self.override_yaml = override_yaml
         self.override_json = override_json
+        self.backend_models_json = backend_models_json
 
 
 class FakeAgentCatalogConfigRepository:
@@ -22,11 +27,27 @@ class FakeAgentCatalogConfigRepository:
         return self.record
 
     async def upsert_default(self, *, override_yaml: str, override_json: dict):
-        self.record = FakeConfigRecord(override_yaml=override_yaml, override_json=override_json)
+        backend_models_json = self.record.backend_models_json if self.record is not None else None
+        self.record = FakeConfigRecord(
+            override_yaml=override_yaml,
+            override_json=override_json,
+            backend_models_json=backend_models_json,
+        )
+        return self.record
+
+    async def update_backend_models(self, *, backend_models: dict[str, str] | None):
+        if self.record is None:
+            self.record = FakeConfigRecord(backend_models_json=backend_models)
+        else:
+            self.record.backend_models_json = backend_models
         return self.record
 
     async def clear_default(self) -> None:
-        self.record = None
+        if self.record is not None and self.record.backend_models_json is not None:
+            self.record.override_yaml = None
+            self.record.override_json = None
+        else:
+            self.record = None
 
 
 def test_config_service_persists_override_to_repository_and_file(tmp_path: Path, monkeypatch):
@@ -176,6 +197,37 @@ def test_config_service_replace_catalog_persists_structured_payload(tmp_path: Pa
     assert (
         config.effective_catalog["agents"][0]["description"] == "Structured reviewer description."
     )
+
+
+def test_backend_models_config_persists_database_override(monkeypatch):
+    from app.core.settings import settings
+
+    monkeypatch.setattr(
+        settings,
+        "opencode_backend_models",
+        {"local_llm": "openrouter/default-model"},
+    )
+    repository = FakeAgentCatalogConfigRepository()
+    service = AgentCatalogConfigService(repository)
+
+    config = _run(
+        service.replace_backend_models(
+            {
+                "local_llm": "openrouter/planner-model",
+                "codex": "openrouter/coding-model",
+                "empty": "",
+            }
+        )
+    )
+
+    assert repository.record is not None
+    assert repository.record.backend_models_json == {
+        "local_llm": "openrouter/planner-model",
+        "codex": "openrouter/coding-model",
+    }
+    assert config.default_models == {"local_llm": "openrouter/default-model"}
+    assert config.effective_models["local_llm"] == "openrouter/planner-model"
+    assert config.effective_models["codex"] == "openrouter/coding-model"
 
 
 def _run(awaitable):
