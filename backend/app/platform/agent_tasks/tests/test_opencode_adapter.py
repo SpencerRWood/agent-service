@@ -72,11 +72,15 @@ def test_execute_parses_json_events_into_summary_and_artifact():
         adapter.execute(
             work_package=build_work_package(),
             backend=BackendName.CODEX,
+            model_overrides={"codex": "openrouter/openai/gpt-oss-120b:free"},
         )
     )
 
     assert payload["backend"] == "codex"
+    assert payload["model"] == "openrouter/openai/gpt-oss-120b:free"
     assert payload["summary"] == "The stream path is /api/agent-tasks/{task_id}/stream."
+    assert payload["metrics"]["model"] == "openrouter/openai/gpt-oss-120b:free"
+    assert payload["artifacts"][0]["provenance"]["model"] == "openrouter/openai/gpt-oss-120b:free"
     assert payload["artifacts"][0]["title"] == "Task Result"
     argv, stdin = runner.calls[0]
     assert argv[:4] == ["/bin/echo", "run", "--format", "json"]

@@ -7,7 +7,8 @@ version: 0.4.3
 
 import json
 import re
-from typing import Any, Optional
+from typing import Any
+from uuid import uuid4
 
 import httpx
 from pydantic import BaseModel, Field
@@ -176,6 +177,7 @@ class Pipe:
         message = self._stringify_value(payload.get("message"))
         state = self._stringify_value(payload.get("state"))
         backend = self._stringify_value(payload.get("backend"))
+        model = self._stringify_value(payload.get("model"))
         artifact_type = self._stringify_value(payload.get("artifact_type"))
         title = self._stringify_value(payload.get("title"))
         available = payload.get("available")
@@ -185,6 +187,8 @@ class Pipe:
             details.append(f"state={state}")
         if backend:
             details.append(f"backend={backend}")
+        if model:
+            details.append(f"model={model}")
         if artifact_type:
             details.append(f"artifact={artifact_type}")
         if title:
@@ -255,22 +259,28 @@ class Pipe:
     def _build_metadata(
         self,
         body: dict[str, Any],
-        __user__: Optional[dict[str, Any]],
+        __user__: dict[str, Any] | None,
         prompt: str,
     ) -> dict[str, Any]:
         user = __user__ or {}
+        message_id = body.get("id") or body.get("message_id") or str(uuid4())
+        chat_id = body.get("chat_id") or body.get("conversation_id")
 
         metadata: dict[str, Any] = {
+            "request_id": message_id,
+            "message_id": message_id,
+            "chat_id": chat_id,
+            "conversation_id": body.get("conversation_id") or chat_id,
             "source": "openwebui_pipe",
             "client": {
                 "name": "openwebui",
                 "model_id": body.get("model"),
                 "stream": bool(body.get("stream", True)),
                 "conversation_id": body.get("conversation_id"),
-                "message_id": body.get("id"),
+                "message_id": message_id,
             },
             "chat": {
-                "id": body.get("chat_id"),
+                "id": chat_id,
                 "title": body.get("title"),
                 "message_count": len(body.get("messages", [])),
             },
@@ -466,8 +476,8 @@ class Pipe:
         agent_label: str = "Agent",
     ) -> dict[str, Any]:
         terminal_status = "unknown"
-        last_visible_status: Optional[str] = None
-        pending_approval_request: Optional[dict[str, Any]] = None
+        last_visible_status: str | None = None
+        pending_approval_request: dict[str, Any] | None = None
 
         async def emit_visible_status(
             description: str,
@@ -505,7 +515,7 @@ class Pipe:
         async with client.stream("GET", stream_url) as response:
             response.raise_for_status()
 
-            current_event: Optional[str] = None
+            current_event: str | None = None
 
             async for raw_line in response.aiter_lines():
                 if raw_line is None:
@@ -612,12 +622,10 @@ class Pipe:
     async def pipe(
         self,
         body: dict[str, Any],
-        __user__: Optional[dict[str, Any]] = None,
+        __user__: dict[str, Any] | None = None,
         __event_emitter__=None,
         __event_call__=None,
     ) -> str:
-        del __event_call__
-
         prompt = self._extract_prompt(body)
         is_enrichment = self._is_enrichment_prompt(prompt)
         raw_model_id = str(body.get("model", "agent_services.planner"))

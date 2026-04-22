@@ -100,6 +100,7 @@ def build_tool_handlers(
                 {
                     "state": result.state.value,
                     "backend": result.backend.value if result.backend is not None else None,
+                    "model": result.metrics.get("model"),
                     "reason_code": result.reason_code,
                     "retry_after": (
                         result.retry_after.isoformat() if result.retry_after is not None else None
